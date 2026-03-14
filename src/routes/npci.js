@@ -5,12 +5,21 @@ const npciService     = require('../services/npciService')
 const supabaseService = require('../services/supabaseService')
 
 // Stores details from the last /extract call for debugging
-let lastExtractDebug = { timestamp: null, responses: [] }
+let lastExtractDebug = { timestamp: null, responses: [], authFailed: false, error: null }
+
+// Log EVERY request to NPCI routes
+router.use((req, res, next) => {
+  console.log(`[NPCI] ${req.method} ${req.path} | content-length: ${req.headers['content-length'] || 'N/A'} | x-app-key: ${req.headers['x-app-key'] ? 'present' : 'MISSING'}`)
+  next()
+})
 
 // ── Auth middleware ────────────────────────────────────────────────
 function authGuard(req, res, next) {
   const appKey = req.headers['x-app-key']
-  if (!appKey || appKey !== process.env.APP_SECRET) {
+  const secret = process.env.APP_SECRET
+  if (!appKey || appKey !== secret) {
+    console.log(`[NPCI] AUTH FAILED — appKey=${appKey ? appKey.substring(0,10) + '...' : 'MISSING'}, APP_SECRET=${secret ? secret.substring(0,10) + '...' : 'NOT SET'}`)
+    lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], authFailed: true, error: `Auth failed. Key present: ${!!appKey}, Secret set: ${!!secret}, Match: ${appKey === secret}` }
     return res.status(401).json({ success: false, error: 'Unauthorized' })
   }
   next()
