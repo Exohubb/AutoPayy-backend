@@ -81,14 +81,31 @@ function extractFromChats(items) {
   const enrichmentByUmn = {}
   const mandatesFromChats = []
 
+  console.log(`[Parser:extractFromChats] Scanning ${items.length} items for chat messages`)
+
   for (const item of items) {
-    if (!isChatMessage(item)) continue
+    if (!isChatMessage(item)) {
+      console.log(`[Parser:extractFromChats] Item NOT a chat (keys: ${Object.keys(item).slice(0,5).join(',')})`)
+      continue
+    }
+
+    const title = item.title || '(no title)'
     const content = item.last_message_content || ''
-    if (!content) continue
+    console.log(`[Parser:extractFromChats] Chat: "${title.substring(0, 80)}" content=${content.length} chars`)
+
+    if (!content) {
+      console.log(`[Parser:extractFromChats]   → Skipped: no content`)
+      continue
+    }
 
     // Parse markdown table rows: | Field | Value |
     const tableRows = content.match(/\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/g)
-    if (!tableRows || tableRows.length < 2) continue
+    console.log(`[Parser:extractFromChats]   → Table rows matched: ${tableRows ? tableRows.length : 0}`)
+
+    if (!tableRows || tableRows.length < 2) {
+      console.log(`[Parser:extractFromChats]   → Skipped: not enough table rows`)
+      continue
+    }
 
     const data = {}
     for (const row of tableRows) {
@@ -101,6 +118,10 @@ function extractFromChats(items) {
         }
       }
     }
+
+    console.log(`[Parser:extractFromChats]   → Parsed data keys: ${Object.keys(data).join(', ')}`)
+    console.log(`[Parser:extractFromChats]   → payee name="${data['payee name'] || 'N/A'}", amount="${data['amount'] || 'N/A'}", status="${data['status'] || 'N/A'}"`)
+
     if (Object.keys(data).length === 0) continue
 
     // Extract UMN from intent link in the chat content
