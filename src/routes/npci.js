@@ -54,25 +54,37 @@ router.post('/fetch', authGuard, async (req, res) => {
 })
 
 // ── POST /api/npci/extract ────────────────────────────────────────
+// Body is parsed MANUALLY here because express.json() is skipped for this route
 router.post('/extract', authGuard, async (req, res) => {
   try {
     const mandateParser = require('../utils/mandateParser')
 
-    // Debug: check if body was parsed
-    console.log(`[NPCI] /extract called. Body exists: ${!!req.body}, Body type: ${typeof req.body}`)
-    if (!req.body) {
-      lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], authFailed: false, error: 'req.body is null/undefined — body parser failed' }
-      return res.status(400).json({ success: false, error: 'Body not parsed' })
+    // Manually read the raw body (express.json is skipped for this route)
+    const bodyText = await new Promise((resolve, reject) => {
+      let data = ''
+      req.setEncoding('utf8')
+      req.on('data', (chunk) => { data += chunk })
+      req.on('end', () => resolve(data))
+      req.on('error', (e) => reject(e))
+    })
+
+    console.log(`[NPCI] Raw body length: ${bodyText.length} chars`)
+
+    let body
+    try {
+      body = JSON.parse(bodyText)
+    } catch (e) {
+      console.log(`[NPCI] Body JSON parse error: ${e.message}`)
+      console.log(`[NPCI] Body preview: ${bodyText.substring(0, 500)}`)
+      lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], error: `Body JSON parse failed: ${e.message}`, bodyPreview: bodyText.substring(0, 1000) }
+      return res.status(400).json({ success: false, error: 'Invalid JSON body' })
     }
 
-    console.log(`[NPCI] Body keys: ${Object.keys(req.body).join(', ')}`)
-    console.log(`[NPCI] rawResponses type: ${typeof req.body.rawResponses}, isArray: ${Array.isArray(req.body.rawResponses)}, length: ${req.body.rawResponses ? req.body.rawResponses.length : 'N/A'}`)
-
-    const rawResponses = req.body.rawResponses
-    const userId = req.body.userId
+    const rawResponses = body.rawResponses
+    const userId = body.userId
 
     if (!rawResponses || !userId) {
-      lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], authFailed: false, error: `Missing fields. rawResponses: ${!!rawResponses}, userId: ${!!userId}` }
+      lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], error: `Missing fields. rawResponses: ${!!rawResponses}, userId: ${!!userId}`, bodyKeys: Object.keys(body) }
       return res.status(400).json({ success: false, error: 'Missing rawResponses or userId' })
     }
 
