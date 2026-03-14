@@ -58,6 +58,80 @@ router.post('/fetch', authGuard, async (req, res) => {
   }
 })
 
+// ── POST /api/npci/extract ────────────────────────────────────────
+// PRIMARY endpoint — receives raw API responses intercepted from
+// the NPCI WebView, parses them, stores in Supabase, returns mandates.
+router.post('/extract', authGuard, async (req, res) => {
+  try {
+    const { rawResponses, userId } = req.body
+    const mandateParser = require('../utils/mandateParser')
+
+    if (!rawResponses || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing rawResponses or userId'
+      })
+    }
+
+    console.log(`[NPCI] Extracting mandates from ${rawResponses.length} intercepted responses for user: ${userId}`)
+
+    const allMandates = []
+
+    for (const raw of rawResponses) {
+      try {
+        // Each raw entry is a JSON string — parse it first
+        let parsed
+        try {
+          parsed = JSON.parse(raw)
+        } catch {
+          // If it's not valid JSON, try treating it as scraped DOM data
+          console.log('[NPCI] Non-JSON response, skipping parse')
+          continue
+        }
+
+        const mandates = mandateParser.parse(parsed, 'intercepted')
+        if (mandates.length > 0) {
+          allMandates.push(...mandates)
+          console.log(`[NPCI] Parsed ${mandates.length} mandates from intercepted response`)
+        }
+      } catch (e) {
+        console.log(`[NPCI] Failed to parse response: ${e.message}`)
+      }
+    }
+
+    // Deduplicate
+    const seen = new Map()
+    for (const m of allMandates) {
+      const key = m.mandateRef || m.umn || m.id
+      if (!seen.has(key)) seen.set(key, m)
+    }
+    const uniqueMandates = Array.from(seen.values())
+
+    console.log(`[NPCI] Total unique mandates: ${uniqueMandates.length}`)
+
+    // Store in Supabase
+    if (uniqueMandates.length > 0) {
+      await supabaseService.saveMandates(userId, uniqueMandates)
+    }
+
+    // Log session
+    await supabaseService.logSession(userId, uniqueMandates.length)
+
+    return res.json({
+      success:    true,
+      mandates:   uniqueMandates,
+      totalFound: uniqueMandates.length
+    })
+  } catch (err) {
+    console.error('[NPCI] Extract error:', err.message)
+    return res.status(500).json({
+      success: false,
+      error:   'Internal server error',
+      message: err.message
+    })
+  }
+})
+
 // ── GET /api/npci/mandates/:userId ────────────────────────────────
 // Retrieve stored mandates from Supabase for a user.
 router.get('/mandates/:userId', authGuard, async (req, res) => {
