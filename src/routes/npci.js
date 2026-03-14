@@ -241,4 +241,11 @@ router.get('/debug', (req, res) => {
   res.json(lastExtractDebug)
 })
 
+// ── GET /api/npci/logs — Shows recent server logs ─────────────────
+router.get('/logs', (req, res) => {
+  // Access the global logBuffer from index.js (attached to process)
+  const logs = global.logBuffer || []
+  res.type('text/plain').send(logs.map(l => `${l.t} ${l.m}`).join('\n'))
+})
+
 module.exports = router
