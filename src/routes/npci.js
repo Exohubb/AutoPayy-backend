@@ -14,147 +14,174 @@ function authGuard(req, res, next) {
 }
 
 // ── POST /api/npci/fetch ──────────────────────────────────────────
-// Receives cookies from Android, fetches mandates from NPCI, stores
-// in Supabase, returns results to the app.
 router.post('/fetch', authGuard, async (req, res) => {
   try {
     const { cookies, userId } = req.body
 
     if (!cookies || !userId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing cookies or userId'
-      })
+      return res.status(400).json({ success: false, error: 'Missing cookies or userId' })
     }
 
     console.log(`[NPCI] Fetching mandates for user: ${userId}`)
-
-    // 1. Fetch from NPCI using forwarded cookies
     const mandates = await npciService.fetchAllMandates(cookies)
-
     console.log(`[NPCI] Found ${mandates.length} mandates total`)
 
-    // 2. Store in Supabase (only parsed data — never raw cookies)
-    if (mandates.length > 0) {
-      await supabaseService.saveMandates(userId, mandates)
+    // Save to Supabase (non-blocking — don't let it break the response)
+    try {
+      if (mandates.length > 0) await supabaseService.saveMandates(userId, mandates)
+      await supabaseService.logSession(userId, mandates.length)
+    } catch (dbErr) {
+      console.error('[NPCI] Supabase save error (non-fatal):', dbErr.message)
     }
 
-    // 3. Log session
-    await supabaseService.logSession(userId, mandates.length)
-
-    // 4. Return to Android app
-    return res.json({
-      success:    true,
-      mandates:   mandates,
-      totalFound: mandates.length
-    })
+    return res.json({ success: true, mandates, totalFound: mandates.length })
   } catch (err) {
     console.error('[NPCI] Fetch error:', err.message)
-    return res.status(500).json({
-      success: false,
-      error:   'Internal server error',
-      message: err.message
-    })
+    return res.status(500).json({ success: false, error: 'Internal server error', message: err.message })
   }
 })
 
 // ── POST /api/npci/extract ────────────────────────────────────────
-// PRIMARY endpoint — receives raw API responses intercepted from
-// the NPCI WebView, parses them, stores in Supabase, returns mandates.
 router.post('/extract', authGuard, async (req, res) => {
   try {
     const { rawResponses, userId } = req.body
     const mandateParser = require('../utils/mandateParser')
 
     if (!rawResponses || !userId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing rawResponses or userId'
-      })
+      return res.status(400).json({ success: false, error: 'Missing rawResponses or userId' })
     }
 
-    console.log(`[NPCI] Extracting mandates from ${rawResponses.length} intercepted responses for user: ${userId}`)
+    console.log(`[NPCI] Extracting from ${rawResponses.length} responses for user: ${userId}`)
 
     const allMandates = []
 
     for (let i = 0; i < rawResponses.length; i++) {
       const raw = rawResponses[i]
       try {
-        console.log(`[NPCI] Response #${i+1}: ${raw.length} chars, preview: ${String(raw).substring(0, 200)}`)
+        console.log(`[NPCI] Response #${i+1}: ${raw.length} chars`)
 
-        // Each raw entry is a JSON string — parse it first
         let parsed
         try {
           parsed = JSON.parse(raw)
         } catch (e) {
-          console.log(`[NPCI] Response #${i+1} is not valid JSON, skipping`)
+          console.log(`[NPCI] Response #${i+1} not valid JSON, skipping`)
           continue
         }
 
-        console.log(`[NPCI] Response #${i+1} parsed as: ${typeof parsed}, keys: ${typeof parsed === 'object' && parsed ? Object.keys(parsed).slice(0, 10).join(', ') : 'N/A'}`)
-
         const mandates = mandateParser.parse(parsed, 'intercepted')
+        console.log(`[NPCI] Response #${i+1}: parsed ${mandates.length} mandates`)
         if (mandates.length > 0) {
           allMandates.push(...mandates)
-          console.log(`[NPCI] ✓ Parsed ${mandates.length} mandates from response #${i+1}`)
-        } else {
-          console.log(`[NPCI] ✗ No mandates found in response #${i+1}`)
         }
       } catch (e) {
-        console.log(`[NPCI] Failed to parse response #${i+1}: ${e.message}`)
+        console.log(`[NPCI] Failed response #${i+1}: ${e.message}`)
       }
     }
 
-    // Deduplicate
+    // Deduplicate by umn first, then mandateRef, then id
     const seen = new Map()
     for (const m of allMandates) {
-      const key = m.mandateRef || m.umn || m.id
+      const key = m.umn || m.mandateRef || m.id
       if (!seen.has(key)) seen.set(key, m)
     }
     const uniqueMandates = Array.from(seen.values())
 
-    console.log(`[NPCI] Total unique mandates: ${uniqueMandates.length}`)
+    console.log(`[NPCI] Total: ${allMandates.length}, Unique: ${uniqueMandates.length}`)
 
-    // Store in Supabase
-    if (uniqueMandates.length > 0) {
-      await supabaseService.saveMandates(userId, uniqueMandates)
+    // IMPORTANT: Send response FIRST, then save to Supabase.
+    // This way if Supabase fails, the app still gets mandates.
+    res.json({ success: true, mandates: uniqueMandates, totalFound: uniqueMandates.length })
+
+    // Save to Supabase in background (errors won't affect response)
+    try {
+      if (uniqueMandates.length > 0) await supabaseService.saveMandates(userId, uniqueMandates)
+      await supabaseService.logSession(userId, uniqueMandates.length)
+    } catch (dbErr) {
+      console.error('[NPCI] Supabase save error (non-fatal):', dbErr.message)
     }
-
-    // Log session
-    await supabaseService.logSession(userId, uniqueMandates.length)
-
-    return res.json({
-      success:    true,
-      mandates:   uniqueMandates,
-      totalFound: uniqueMandates.length
-    })
   } catch (err) {
-    console.error('[NPCI] Extract error:', err.message)
-    return res.status(500).json({
-      success: false,
-      error:   'Internal server error',
-      message: err.message
-    })
+    console.error('[NPCI] Extract error:', err.message, err.stack)
+    return res.status(500).json({ success: false, error: 'Internal server error', message: err.message })
   }
 })
 
 // ── GET /api/npci/mandates/:userId ────────────────────────────────
-// Retrieve stored mandates from Supabase for a user.
 router.get('/mandates/:userId', authGuard, async (req, res) => {
   try {
     const { userId } = req.params
     const mandates = await supabaseService.getMandates(userId)
-
-    return res.json({
-      success:    true,
-      mandates:   mandates,
-      totalFound: mandates.length
-    })
+    return res.json({ success: true, mandates, totalFound: mandates.length })
   } catch (err) {
     console.error('[NPCI] Get mandates error:', err.message)
-    return res.status(500).json({
+    return res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+})
+
+// ── GET /api/npci/test — Parser test with sample data ─────────────
+router.get('/test', (req, res) => {
+  const mandateParser = require('../utils/mandateParser')
+
+  // Sample NPCI data (same format as real intercepted responses)
+  const testData = [
+    {
+      umn: '9e96380e336c42568454a2ba71c6afae@okicici',
+      amount: 8300,
+      is_pause: true,
+      is_revoke: true,
+      is_unpause: false,
+      'payee name': 'RAZORPAY SOFTWARE PRIVATE LIMITED',
+      recurrance: 'CUSTOM',
+      'Latest Status': 'ACTIVE',
+      'Total Execution Count': 1,
+      'Total Execution Amount': 2480.83
+    },
+    {
+      umn: '49d81e2a19c18eb8e0638b1cbc0a60ed@ptsbi',
+      amount: 499,
+      is_pause: true,
+      is_revoke: true,
+      is_unpause: false,
+      'payee name': 'DISCOVERY COMMUNICATIONS INDIA',
+      recurrance: 'CUSTOM',
+      'Latest Status': 'ACTIVE',
+      'Total Execution Count': 1,
+      'Total Execution Amount': 1
+    },
+    {
+      id: '9292c378-1b86-11f1-bdda-061f99d60486',
+      title: 'Revoke the mandate for RAZORPAY',
+      message_count: 5,
+      last_session_id: '81fd9358',
+      created_session_id: '81fd9358',
+      last_message_content: 'Some chat text',
+      created_at: '2026-03-09T07:07:02.385000Z'
+    },
+    {
+      title: 'New Chat',
+      message_count: 0,
+      last_session_id: 'abc123',
+      created_session_id: 'def456'
+    }
+  ]
+
+  try {
+    const result = mandateParser.parse(testData, 'test')
+    return res.json({
+      success: true,
+      testInput: testData.length + ' items',
+      parsedCount: result.length,
+      mandates: result.map(m => ({
+        merchantName: m.merchantName,
+        amount: m.amount,
+        umn: m.umn,
+        status: m.status
+      }))
+    })
+  } catch (e) {
+    return res.json({
       success: false,
-      error:   'Internal server error'
+      error: e.message,
+      stack: e.stack
     })
   }
 })
