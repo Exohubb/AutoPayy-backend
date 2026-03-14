@@ -6,14 +6,21 @@ const app     = express()
 
 app.use(cors())
 
-// Log ALL requests BEFORE body parsing
+// Log ALL requests before body parsing
 app.use((req, res, next) => {
   console.log(`[REQ] ${req.method} ${req.url} content-type: ${req.headers['content-type'] || 'NONE'} content-length: ${req.headers['content-length'] || 'NONE'}`)
   next()
 })
 
-// Parse JSON with generous limit
-app.use(express.json({ limit: '50mb' }))
+// Parse JSON body — but SKIP for /api/npci/extract (handled manually in route)
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.url === '/api/npci/extract') {
+    // Skip express.json() — the route handler will parse body manually
+    next()
+  } else {
+    express.json({ limit: '50mb' })(req, res, next)
+  }
+})
 
 // Health check
 app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }))
@@ -21,15 +28,9 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date()
 // NPCI routes
 app.use('/api/npci', require('./routes/npci'))
 
-// Global error handler (MUST be after routes)
+// Global error handler
 app.use((err, req, res, next) => {
   console.error(`[ERROR] ${req.method} ${req.url} → ${err.type || 'unknown'}: ${err.message}`)
-  if (err.type === 'entity.too.large') {
-    return res.status(413).json({ success: false, error: 'Payload too large' })
-  }
-  if (err.type === 'entity.parse.failed') {
-    return res.status(400).json({ success: false, error: 'Invalid JSON body' })
-  }
   res.status(500).json({ success: false, error: err.message })
 })
 
