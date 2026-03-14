@@ -1,17 +1,18 @@
 const { v4: uuidv4 } = require('uuid')
 
 // ── Field name mappings ───────────────────────────────────────────
-const MERCHANT_KEYS  = ['merchantName', 'merchant', 'payeeName', 'beneficiaryName', 'merchantVpa', 'payee', 'name', 'description', 'creditorName', 'billerName', 'org', 'orgName', 'orgId']
-const AMOUNT_KEYS    = ['amount', 'mandateAmount', 'maxAmount', 'limitAmount', 'debitAmount', 'amountLimit', 'txnAmount', 'value', 'amt', 'mandateAmt']
-const FREQUENCY_KEYS = ['frequency', 'recurrencePattern', 'type', 'mandateType', 'billingCycle', 'recurrence', 'recurrenceRule', 'tenure', 'cycle']
-const STATUS_KEYS    = ['status', 'mandateStatus', 'state', 'active', 'mandateState', 'txnStatus']
-const BANK_KEYS      = ['bankName', 'customerBank', 'debitBank', 'bankIfsc', 'bankCode', 'remitterBank', 'payerBank', 'bank', 'bankAccountName', 'ifsc']
-const UPI_KEYS       = ['vpa', 'upiId', 'payeeVpa', 'merchantVpa', 'payerVpa', 'creditorVpa', 'debtorVpa']
-const UMN_KEYS       = ['umn', 'umrn', 'uniqueMandateNumber', 'mandateUrn', 'txnId', 'refId']
-const REF_KEYS       = ['mandateRef', 'mandateId', 'referenceId', 'txnRef', 'id', 'mandateNo', 'seqNo', 'srno', 'complaintId', 'transactionId']
-const START_KEYS     = ['startDate', 'fromDate', 'validFrom', 'createdDate', 'createDate', 'initiationDate', 'mandateDate']
-const END_KEYS       = ['endDate', 'toDate', 'validTill', 'expiryDate', 'expiry', 'validUpto']
-const NEXT_DATE_KEYS = ['nextDebitDate', 'nextExecutionDate', 'dueDate', 'nextDate']
+// Includes actual NPCI field names (with spaces, misspellings, etc.)
+const MERCHANT_KEYS  = ['merchantName', 'merchant', 'payeeName', 'payee name', 'beneficiaryName', 'merchantVpa', 'payee', 'name', 'description', 'creditorName', 'billerName', 'org', 'orgName', 'orgId', 'Payee Name', 'Merchant Name']
+const AMOUNT_KEYS    = ['amount', 'Amount', 'mandateAmount', 'maxAmount', 'limitAmount', 'debitAmount', 'amountLimit', 'txnAmount', 'value', 'amt', 'mandateAmt', 'Mandate Amount']
+const FREQUENCY_KEYS = ['frequency', 'Frequency', 'recurrencePattern', 'type', 'mandateType', 'billingCycle', 'recurrence', 'recurrance', 'recurrenceRule', 'tenure', 'cycle', 'Recurrence', 'Recurrance']
+const STATUS_KEYS    = ['status', 'Status', 'mandateStatus', 'state', 'active', 'mandateState', 'txnStatus', 'Latest Status', 'latestStatus', 'latest_status']
+const BANK_KEYS      = ['bankName', 'customerBank', 'debitBank', 'bankIfsc', 'bankCode', 'remitterBank', 'payerBank', 'bank', 'bankAccountName', 'ifsc', 'Bank Name', 'Bank', 'Payer Bank']
+const UPI_KEYS       = ['vpa', 'upiId', 'payeeVpa', 'merchantVpa', 'payerVpa', 'creditorVpa', 'debtorVpa', 'Payee VPA', 'Payer VPA', 'VPA']
+const UMN_KEYS       = ['umn', 'UMN', 'umrn', 'uniqueMandateNumber', 'mandateUrn', 'txnId', 'refId', 'Umn']
+const REF_KEYS       = ['mandateRef', 'mandateId', 'referenceId', 'txnRef', 'id', 'mandateNo', 'seqNo', 'srno', 'complaintId', 'transactionId', 'Mandate Ref', 'Mandate Id']
+const START_KEYS     = ['startDate', 'fromDate', 'validFrom', 'createdDate', 'createDate', 'initiationDate', 'mandateDate', 'Start Date', 'start_date', 'From Date']
+const END_KEYS       = ['endDate', 'toDate', 'validTill', 'expiryDate', 'expiry', 'validUpto', 'End Date', 'end_date', 'Valid Till', 'Expiry Date']
+const NEXT_DATE_KEYS = ['nextDebitDate', 'nextExecutionDate', 'dueDate', 'nextDate', 'Next Debit Date', 'Next Execution Date', 'Due Date']
 
 /**
  * Parse any response shape into a standard mandate array.
@@ -82,15 +83,47 @@ function buildMandate(item) {
 
   if (!merchantName) merchantName = 'Unknown Merchant'
 
+  const umn = findField(item, UMN_KEYS) || ''
+  let bankName = findField(item, BANK_KEYS) || ''
+  let upiHandle = findField(item, UPI_KEYS) || ''
+
+  // Extract bank & UPI handle from UMN (e.g. "abc123@okicici")
+  if (umn.includes('@')) {
+    const handle = umn.split('@')[1] || ''
+    if (!upiHandle) upiHandle = umn
+
+    // Map known UPI handles to bank names
+    if (!bankName && handle) {
+      const bankMap = {
+        'okicici': 'ICICI Bank', 'icici': 'ICICI Bank',
+        'ptsbi': 'SBI', 'oksbi': 'SBI', 'sbi': 'SBI',
+        'okhdfcbank': 'HDFC Bank', 'hdfcbank': 'HDFC Bank',
+        'okaxis': 'Axis Bank', 'axisbank': 'Axis Bank', 'axis': 'Axis Bank',
+        'paytm': 'Paytm Payments Bank',
+        'ybl': 'PhonePe (YES Bank)', 'ibl': 'IndusInd Bank',
+        'upi': 'UPI', 'apl': 'Amazon Pay',
+        'kotak': 'Kotak Bank', 'okkotak': 'Kotak Bank',
+        'boi': 'Bank of India', 'pnb': 'PNB',
+        'bob': 'Bank of Baroda', 'canara': 'Canara Bank',
+        'union': 'Union Bank', 'idbi': 'IDBI Bank',
+        'federal': 'Federal Bank', 'indus': 'IndusInd Bank',
+        'rbl': 'RBL Bank', 'yesbank': 'YES Bank',
+        'jupiteraxis': 'Jupiter (Axis)', 'freecharge': 'Freecharge',
+        'slice': 'Slice', 'fi': 'Fi Money'
+      }
+      bankName = bankMap[handle.toLowerCase()] || handle.toUpperCase()
+    }
+  }
+
   const mandate = {
     id:            findField(item, REF_KEYS) || uuidv4(),
     merchantName:  merchantName,
     amount:        parseAmount(findField(item, AMOUNT_KEYS)),
     frequency:     normalizeFrequency(findField(item, FREQUENCY_KEYS)),
     status:        normalizeStatus(findField(item, STATUS_KEYS)),
-    bankName:      findField(item, BANK_KEYS) || '',
-    upiHandle:     findField(item, UPI_KEYS) || '',
-    umn:           findField(item, UMN_KEYS) || '',
+    bankName:      bankName,
+    upiHandle:     upiHandle,
+    umn:           umn,
     mandateRef:    findField(item, REF_KEYS) || uuidv4(),
     startDate:     findField(item, START_KEYS) || '',
     endDate:       findField(item, END_KEYS) || '',
