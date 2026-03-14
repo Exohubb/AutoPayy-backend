@@ -4,35 +4,63 @@ const express = require('express')
 const cors    = require('cors')
 const app     = express()
 
+// ── In-memory log buffer (viewable via /api/npci/logs) ────────────
+const logBuffer = []
+global.logBuffer = logBuffer
+const MAX_LOGS = 100
+const origLog = console.log
+const origError = console.error
+console.log = (...args) => {
+  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+  logBuffer.push({ t: new Date().toISOString(), m: msg })
+  if (logBuffer.length > MAX_LOGS) logBuffer.shift()
+  origLog.apply(console, args)
+}
+console.error = (...args) => {
+  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+  logBuffer.push({ t: new Date().toISOString(), m: '[ERR] ' + msg })
+  if (logBuffer.length > MAX_LOGS) logBuffer.shift()
+  origError.apply(console, args)
+}
+
 app.use(cors())
 
-// Log ALL requests before body parsing
+// Log ALL incoming requests
 app.use((req, res, next) => {
-  console.log(`[REQ] ${req.method} ${req.url} content-type: ${req.headers['content-type'] || 'NONE'} content-length: ${req.headers['content-length'] || 'NONE'}`)
+  console.log(`[REQ] ${req.method} ${req.url} content-type:${req.headers['content-type'] || 'NONE'} len:${req.headers['content-length'] || 'NONE'}`)
   next()
 })
 
-// Parse JSON body — but SKIP for /api/npci/extract (handled manually in route)
+// Parse JSON for all routes EXCEPT /api/npci/extract
 app.use((req, res, next) => {
-  if (req.method === 'POST' && req.url === '/api/npci/extract') {
-    // Skip express.json() — the route handler will parse body manually
+  if (req.method === 'POST' && (req.url === '/api/npci/extract' || req.path === '/api/npci/extract')) {
+    console.log(`[BODY] Skipping express.json for /extract`)
     next()
   } else {
-    express.json({ limit: '50mb' })(req, res, next)
+    express.json({ limit: '50mb' })(req, res, (err) => {
+      if (err) {
+        console.error(`[BODY] Parse error for ${req.url}: ${err.type} ${err.message}`)
+      }
+      next()
+    })
   }
 })
 
-// Health check
-app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }))
+// Health check with VERSION
+app.get('/health', (_req, res) => res.json({
+  status: 'ok',
+  version: 'v6-manual-body-parse',
+  timestamp: new Date().toISOString()
+}))
 
 // NPCI routes
 app.use('/api/npci', require('./routes/npci'))
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error(`[ERROR] ${req.method} ${req.url} → ${err.type || 'unknown'}: ${err.message}`)
+  console.error(`[GLOBAL-ERROR] ${req.method} ${req.url}: ${err.message}`)
   res.status(500).json({ success: false, error: err.message })
 })
 
 const PORT = process.env.PORT || 3000
-app.listen(PORT, () => console.log(`AutoPayy backend running on port ${PORT}`))
+app.listen(PORT, () => console.log(`AutoPayy backend v6-manual-body-parse running on port ${PORT}`))
