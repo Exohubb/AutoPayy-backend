@@ -56,10 +56,23 @@ router.post('/fetch', authGuard, async (req, res) => {
 // ── POST /api/npci/extract ────────────────────────────────────────
 router.post('/extract', authGuard, async (req, res) => {
   try {
-    const { rawResponses, userId } = req.body
     const mandateParser = require('../utils/mandateParser')
 
+    // Debug: check if body was parsed
+    console.log(`[NPCI] /extract called. Body exists: ${!!req.body}, Body type: ${typeof req.body}`)
+    if (!req.body) {
+      lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], authFailed: false, error: 'req.body is null/undefined — body parser failed' }
+      return res.status(400).json({ success: false, error: 'Body not parsed' })
+    }
+
+    console.log(`[NPCI] Body keys: ${Object.keys(req.body).join(', ')}`)
+    console.log(`[NPCI] rawResponses type: ${typeof req.body.rawResponses}, isArray: ${Array.isArray(req.body.rawResponses)}, length: ${req.body.rawResponses ? req.body.rawResponses.length : 'N/A'}`)
+
+    const rawResponses = req.body.rawResponses
+    const userId = req.body.userId
+
     if (!rawResponses || !userId) {
+      lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], authFailed: false, error: `Missing fields. rawResponses: ${!!rawResponses}, userId: ${!!userId}` }
       return res.status(400).json({ success: false, error: 'Missing rawResponses or userId' })
     }
 
