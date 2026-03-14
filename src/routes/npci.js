@@ -4,6 +4,9 @@ const router  = express.Router()
 const npciService     = require('../services/npciService')
 const supabaseService = require('../services/supabaseService')
 
+// Stores details from the last /extract call for debugging
+let lastExtractDebug = { timestamp: null, responses: [] }
+
 // ── Auth middleware ────────────────────────────────────────────────
 function authGuard(req, res, next) {
   const appKey = req.headers['x-app-key']
