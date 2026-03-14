@@ -25,17 +25,170 @@ const IS_PAUSE_KEYS      = ['is_pause', 'isPause', 'canPause', 'pauseAllowed']
 const IS_REVOKE_KEYS     = ['is_revoke', 'isRevoke', 'canRevoke', 'revokeAllowed']
 const REMITTER_BANK_KEYS = ['Remitter Bank', 'remitterBank', 'remitter_bank', 'payerBankName', 'debitBankName']
 
+// ── Chat message titles that should NOT be stored as mandates ─────
+const CHAT_TITLE_PATTERNS = [
+  'new chat',
+  'revoke the mandate',
+  'pause the mandate',
+  'cancel the mandate',
+  'unpause the mandate',
+  'resume the mandate'
+]
+
+/**
+ * Check if an object is an NPCI chat message (not a mandate).
+ * Chat objects have: message_count, last_session_id, title, etc.
+ */
+function isChatMessage(item) {
+  if (!item || typeof item !== 'object') return false
+
+  // Has chat-specific keys
+  if (item.message_count !== undefined ||
+      item.last_session_id !== undefined ||
+      item.created_session_id !== undefined) {
+    return true
+  }
+
+  // Title matches chat patterns
+  const title = (item.title || '').toLowerCase().trim()
+  if (title && CHAT_TITLE_PATTERNS.some(p => title.startsWith(p))) {
+    return true
+  }
+
+  // Has last_message_content (chat response)
+  if (item.last_message_content && item.message_count) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Extract enrichment data from NPCI chat message content.
+ * Chat messages contain markdown tables with UPI App, Bank, Category, etc.
+ * Returns a map of UMN → enrichment data to apply to real mandates.
+ */
+function extractEnrichmentFromChats(items) {
+  const enrichmentByUmn = {}
+
+  for (const item of items) {
+    if (!isChatMessage(item)) continue
+    const content = item.last_message_content || ''
+    if (!content) continue
+
+    // Extract data from markdown table like: | Field | Value |
+    const tableRows = content.match(/\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/g)
+    if (!tableRows || tableRows.length < 2) continue
+
+    const data = {}
+    for (const row of tableRows) {
+      const cells = row.split('|').map(c => c.trim()).filter(c => c && c !== '---' && !c.match(/^-+$/))
+      if (cells.length >= 2) {
+        const key = cells[0].toLowerCase().replace(/\*+/g, '').trim()
+        const value = cells[1].trim()
+        if (key && value && key !== 'field' && key !== 'detail') {
+          data[key] = value
+        }
+      }
+    }
+
+    // Extract UMN from Intent_Link in content
+    const umnMatch = content.match(/umn=([a-f0-9]+@[a-z]+)/i)
+    if (umnMatch && Object.keys(data).length > 0) {
+      enrichmentByUmn[umnMatch[1]] = {
+        upiAppName:   data['upi app name'] || data['linked app'] || data['app'] || '',
+        category:     data['category'] || '',
+        remitterBank: data['remitter bank'] || data['bank'] || '',
+        lastExecDate: data['last execution date'] || '',
+        execCount:    parseAmount(data['execution count'] || '0'),
+        execAmount:   parseAmount(data['execution amount'] || '0'),
+        creationDate: data['creation date'] || '',
+        upiId:        data['upi id (vpa)'] || data['upi id'] || data['vpa'] || '',
+      }
+    }
+
+    // Also extract user UPI profile data (for cross-reference)
+    if (data['linked app'] && data['upi id (vpa)'] && data['bank']) {
+      // This is user profile info, not mandate-specific
+      // Store under a special key for potential future use
+      enrichmentByUmn['__user_profile__'] = {
+        linkedApp: data['linked app'] || '',
+        upiId:     data['upi id (vpa)'] || '',
+        bank:      data['bank'] || '',
+      }
+    }
+  }
+
+  return enrichmentByUmn
+}
+
+/**
+ * Calculate next debit date from frequency and a reference date.
+ * @param {string} refDate - date string like "13-12-2025" (dd-mm-yyyy)
+ * @param {string} frequency - e.g. "Monthly", "Weekly", "Yearly", "Custom"
+ * @returns {string} next date in dd-mm-yyyy format, or ''
+ */
+function calculateNextDebitDate(refDate, frequency) {
+  if (!refDate || !frequency) return ''
+
+  // Parse dd-mm-yyyy or dd/mm/yyyy
+  const parts = refDate.split(/[-/]/)
+  if (parts.length !== 3) return ''
+
+  const day = parseInt(parts[0], 10)
+  const month = parseInt(parts[1], 10) - 1  // JS months are 0-indexed
+  const year = parseInt(parts[2], 10)
+  if (isNaN(day) || isNaN(month) || isNaN(year)) return ''
+
+  const date = new Date(year, month, day)
+  if (isNaN(date.getTime())) return ''
+
+  const now = new Date()
+  const freq = frequency.toLowerCase()
+
+  // Keep adding intervals until we're in the future
+  let maxIterations = 120  // safety limit
+  while (date <= now && maxIterations-- > 0) {
+    if (freq.includes('month') || freq === 'custom') {
+      date.setMonth(date.getMonth() + 1)
+    } else if (freq.includes('week')) {
+      date.setDate(date.getDate() + 7)
+    } else if (freq.includes('year') || freq.includes('annual')) {
+      date.setFullYear(date.getFullYear() + 1)
+    } else if (freq.includes('quarter')) {
+      date.setMonth(date.getMonth() + 3)
+    } else if (freq.includes('half')) {
+      date.setMonth(date.getMonth() + 6)
+    } else if (freq.includes('daily') || freq.includes('day')) {
+      date.setDate(date.getDate() + 1)
+    } else {
+      // Default to monthly for unknown frequencies
+      date.setMonth(date.getMonth() + 1)
+    }
+  }
+
+  const dd = String(date.getDate()).padStart(2, '0')
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const yyyy = date.getFullYear()
+  return `${dd}-${mm}-${yyyy}`
+}
+
 /**
  * Parse any response shape into a standard mandate array.
  * Handles: arrays, nested objects, paginated data, deep nesting.
+ * Filters out NPCI chat messages and enriches mandates with chat data.
  */
 function parse(responseData, endpoint) {
   // First try: structured JSON parsing
   const items = extractArray(responseData)
   const results = []
 
+  // Extract enrichment data from any chat messages before filtering
+  const enrichment = extractEnrichmentFromChats(items)
+
   for (const item of items) {
     if (!item || typeof item !== 'object') continue
+    if (isChatMessage(item)) continue  // Skip chat messages
 
     const mandate = buildMandate(item)
     if (mandate) results.push(mandate)
@@ -45,6 +198,7 @@ function parse(responseData, endpoint) {
   if (results.length === 0 && responseData && typeof responseData === 'object') {
     const deepItems = deepSearch(responseData)
     for (const item of deepItems) {
+      if (isChatMessage(item)) continue  // Skip chats in deep search too
       const mandate = buildMandate(item)
       if (mandate) results.push(mandate)
     }
@@ -56,6 +210,31 @@ function parse(responseData, endpoint) {
     results.push(...textMandates)
   }
 
+  // Apply enrichment from chat messages to matching mandates
+  for (const mandate of results) {
+    if (mandate.umn && enrichment[mandate.umn]) {
+      const e = enrichment[mandate.umn]
+      if (!mandate.upiAppName && e.upiAppName) mandate.upiAppName = e.upiAppName
+      if (!mandate.category && e.category) mandate.category = e.category
+      if (!mandate.remitterBank && e.remitterBank) {
+        mandate.remitterBank = e.remitterBank
+        if (!mandate.bankName) mandate.bankName = e.remitterBank
+      }
+      if (!mandate.lastExecDate && e.lastExecDate) mandate.lastExecDate = e.lastExecDate
+      if (!mandate.totalExecCount && e.execCount) mandate.totalExecCount = e.execCount
+      if (!mandate.totalExecAmount && e.execAmount) mandate.totalExecAmount = e.execAmount
+      if (!mandate.creationDate && e.creationDate) mandate.creationDate = e.creationDate
+    }
+
+    // Calculate next debit date if missing
+    if (!mandate.nextDebitDate) {
+      const refDate = mandate.lastExecDate || mandate.creationDate || mandate.startDate
+      if (refDate) {
+        mandate.nextDebitDate = calculateNextDebitDate(refDate, mandate.frequency)
+      }
+    }
+  }
+
   return results
 }
 
@@ -65,6 +244,7 @@ function parse(responseData, endpoint) {
  */
 function buildMandate(item) {
   if (!item || typeof item !== 'object') return null
+  if (isChatMessage(item)) return null  // double-check: skip chats
 
   let merchantName = findField(item, MERCHANT_KEYS) || ''
 
