@@ -77,25 +77,31 @@ router.post('/extract', authGuard, async (req, res) => {
 
     const allMandates = []
 
-    for (const raw of rawResponses) {
+    for (let i = 0; i < rawResponses.length; i++) {
+      const raw = rawResponses[i]
       try {
+        console.log(`[NPCI] Response #${i+1}: ${raw.length} chars, preview: ${String(raw).substring(0, 200)}`)
+
         // Each raw entry is a JSON string — parse it first
         let parsed
         try {
           parsed = JSON.parse(raw)
         } catch {
-          // If it's not valid JSON, try treating it as scraped DOM data
-          console.log('[NPCI] Non-JSON response, skipping parse')
+          console.log(`[NPCI] Response #${i+1} is not valid JSON, skipping`)
           continue
         }
+
+        console.log(`[NPCI] Response #${i+1} parsed as: ${typeof parsed}, keys: ${typeof parsed === 'object' && parsed ? Object.keys(parsed).slice(0, 10).join(', ') : 'N/A'}`)
 
         const mandates = mandateParser.parse(parsed, 'intercepted')
         if (mandates.length > 0) {
           allMandates.push(...mandates)
-          console.log(`[NPCI] Parsed ${mandates.length} mandates from intercepted response`)
+          console.log(`[NPCI] ✓ Parsed ${mandates.length} mandates from response #${i+1}`)
+        } else {
+          console.log(`[NPCI] ✗ No mandates found in response #${i+1}`)
         }
       } catch (e) {
-        console.log(`[NPCI] Failed to parse response: ${e.message}`)
+        console.log(`[NPCI] Failed to parse response #${i+1}: ${e.message}`)
       }
     }
 
