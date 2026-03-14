@@ -214,7 +214,7 @@ function buildMandate(item) {
     canPause:           !!findField(item, IS_PAUSE_KEYS),
     canRevoke:          !!findField(item, IS_REVOKE_KEYS),
     remitterBank:       remitterBank || bankName,
-    rawData:            item
+    rawData:            { merchant: merchantName, amount: parseAmount(findField(item, AMOUNT_KEYS)), umn: umn, status: findField(item, STATUS_KEYS) || '' }
   }
 
   // Accept if it has a merchant name, or amount > 0, or has a UPI/UMN reference
