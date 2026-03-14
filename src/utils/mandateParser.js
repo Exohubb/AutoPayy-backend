@@ -54,9 +54,37 @@ function parse(responseData, endpoint) {
 function buildMandate(item) {
   if (!item || typeof item !== 'object') return null
 
+  let merchantName = findField(item, MERCHANT_KEYS) || ''
+
+  // If no merchant name found, try extracting from UPI/VPA handle
+  if (!merchantName) {
+    const upi = findField(item, UPI_KEYS) || ''
+    if (upi.includes('@')) {
+      merchantName = upi.split('@')[0]
+    }
+  }
+
+  // Still no name? Scan all string values for potential merchant info
+  if (!merchantName) {
+    for (const key of Object.keys(item)) {
+      const fieldVal = item[key]
+      if (typeof fieldVal === 'string' && fieldVal.length > 2 && fieldVal.length < 100) {
+        const lower = key.toLowerCase()
+        if (lower.includes('name') || lower.includes('title') || lower.includes('label') ||
+            lower.includes('desc') || lower.includes('merchant') || lower.includes('creditor') ||
+            lower.includes('org') || lower.includes('company') || lower.includes('biller')) {
+          merchantName = fieldVal
+          break
+        }
+      }
+    }
+  }
+
+  if (!merchantName) merchantName = 'Unknown Merchant'
+
   const mandate = {
     id:            findField(item, REF_KEYS) || uuidv4(),
-    merchantName:  findField(item, MERCHANT_KEYS) || 'Unknown Merchant',
+    merchantName:  merchantName,
     amount:        parseAmount(findField(item, AMOUNT_KEYS)),
     frequency:     normalizeFrequency(findField(item, FREQUENCY_KEYS)),
     status:        normalizeStatus(findField(item, STATUS_KEYS)),
