@@ -57,28 +57,41 @@ router.post('/extract', authGuard, async (req, res) => {
     console.log(`[NPCI] Extracting from ${rawResponses.length} responses for user: ${userId}`)
 
     const allMandates = []
+    lastExtractDebug = { timestamp: new Date().toISOString(), responses: [], totalRaw: rawResponses.length }
 
     for (let i = 0; i < rawResponses.length; i++) {
       const raw = rawResponses[i]
+      const debugEntry = { index: i, length: raw.length, preview: String(raw).substring(0, 500) }
       try {
-        console.log(`[NPCI] Response #${i+1}: ${raw.length} chars`)
-
         let parsed
         try {
           parsed = JSON.parse(raw)
         } catch (e) {
-          console.log(`[NPCI] Response #${i+1} not valid JSON, skipping`)
+          debugEntry.error = 'Invalid JSON: ' + e.message
+          lastExtractDebug.responses.push(debugEntry)
           continue
         }
 
+        debugEntry.type = Array.isArray(parsed) ? 'array' : typeof parsed
+        debugEntry.isArray = Array.isArray(parsed)
+        if (Array.isArray(parsed)) {
+          debugEntry.arrayLength = parsed.length
+          if (parsed[0]) debugEntry.firstItemKeys = Object.keys(parsed[0]).slice(0, 15)
+        } else if (typeof parsed === 'object' && parsed) {
+          debugEntry.keys = Object.keys(parsed).slice(0, 15)
+        }
+
         const mandates = mandateParser.parse(parsed, 'intercepted')
-        console.log(`[NPCI] Response #${i+1}: parsed ${mandates.length} mandates`)
+        debugEntry.mandatesParsed = mandates.length
+        console.log(`[NPCI] Response #${i+1}: ${raw.length} chars → ${mandates.length} mandates`)
         if (mandates.length > 0) {
           allMandates.push(...mandates)
         }
       } catch (e) {
+        debugEntry.error = e.message
         console.log(`[NPCI] Failed response #${i+1}: ${e.message}`)
       }
+      lastExtractDebug.responses.push(debugEntry)
     }
 
     // Deduplicate by umn first, then mandateRef, then id
@@ -187,6 +200,11 @@ router.get('/test', (req, res) => {
       stack: e.stack
     })
   }
+})
+
+// ── GET /api/npci/debug — Shows raw data from last extraction ─────
+router.get('/debug', (req, res) => {
+  res.json(lastExtractDebug)
 })
 
 module.exports = router
