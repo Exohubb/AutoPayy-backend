@@ -80,25 +80,53 @@ router.post('/extract', authGuard, async (req, res) => {
     for (let i = 0; i < rawResponses.length; i++) {
       const raw = rawResponses[i]
       try {
-        console.log(`[NPCI] Response #${i+1}: ${raw.length} chars, preview: ${String(raw).substring(0, 200)}`)
+        const preview = String(raw).substring(0, 300)
+        console.log(`[NPCI] ── Response #${i+1} ──`)
+        console.log(`[NPCI]   Length: ${raw.length} chars`)
+        console.log(`[NPCI]   Preview: ${preview}`)
 
         // Each raw entry is a JSON string — parse it first
         let parsed
         try {
           parsed = JSON.parse(raw)
         } catch {
-          console.log(`[NPCI] Response #${i+1} is not valid JSON, skipping`)
+          console.log(`[NPCI]   ✗ Not valid JSON, skipping`)
           continue
         }
 
-        console.log(`[NPCI] Response #${i+1} parsed as: ${typeof parsed}, keys: ${typeof parsed === 'object' && parsed ? Object.keys(parsed).slice(0, 10).join(', ') : 'N/A'}`)
+        // Detailed structure logging
+        const isArr = Array.isArray(parsed)
+        const pType = isArr ? 'array' : typeof parsed
+        const topKeys = (typeof parsed === 'object' && parsed && !isArr)
+          ? Object.keys(parsed).join(', ')
+          : 'N/A'
+        const arrLen = isArr ? parsed.length : 'N/A'
+
+        console.log(`[NPCI]   Parsed type: ${pType}, array=${isArr}, arrLen=${arrLen}`)
+        console.log(`[NPCI]   Top keys: ${topKeys}`)
+
+        // If it's an array, log first item's keys
+        if (isArr && parsed.length > 0 && typeof parsed[0] === 'object') {
+          const firstKeys = Object.keys(parsed[0]).join(', ')
+          console.log(`[NPCI]   First item keys: ${firstKeys}`)
+          const hasChat = parsed[0].message_count !== undefined || parsed[0].last_session_id !== undefined
+          const hasMandate = parsed[0].umn !== undefined || parsed[0].amount !== undefined || parsed[0]['payee name'] !== undefined
+          console.log(`[NPCI]   First item looks like: chat=${hasChat} mandate=${hasMandate}`)
+        }
+
+        // If it's a single object, log its keys
+        if (!isArr && typeof parsed === 'object' && parsed) {
+          const hasChat = parsed.message_count !== undefined || parsed.last_session_id !== undefined
+          const hasMandate = parsed.umn !== undefined || parsed.amount !== undefined || parsed['payee name'] !== undefined
+          console.log(`[NPCI]   Object looks like: chat=${hasChat} mandate=${hasMandate}`)
+        }
 
         const mandates = mandateParser.parse(parsed, 'intercepted')
         if (mandates.length > 0) {
           allMandates.push(...mandates)
-          console.log(`[NPCI] ✓ Parsed ${mandates.length} mandates from response #${i+1}`)
+          console.log(`[NPCI]   ✓ Parsed ${mandates.length} mandates from response #${i+1}`)
         } else {
-          console.log(`[NPCI] ✗ No mandates found in response #${i+1}`)
+          console.log(`[NPCI]   ✗ No mandates found in response #${i+1}`)
         }
       } catch (e) {
         console.log(`[NPCI] Failed to parse response #${i+1}: ${e.message}`)
