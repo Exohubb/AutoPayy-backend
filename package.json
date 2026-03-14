@@ -1,0 +1,22 @@
+{
+  "name": "autopayy-backend",
+  "version": "1.0.0",
+  "description": "AutoPayy NPCI mandate fetcher backend",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.7",
+    "cors": "^2.8.5",
+    "cheerio": "^1.0.0-rc.12",
+    "@supabase/supabase-js": "^2.39.7",
+    "dotenv": "^16.4.1",
+    "uuid": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
