@@ -6,13 +6,24 @@ const MERCHANT_KEYS  = ['merchantName', 'merchant', 'payeeName', 'payee name', '
 const AMOUNT_KEYS    = ['amount', 'Amount', 'mandateAmount', 'maxAmount', 'limitAmount', 'debitAmount', 'amountLimit', 'txnAmount', 'value', 'amt', 'mandateAmt', 'Mandate Amount']
 const FREQUENCY_KEYS = ['frequency', 'Frequency', 'recurrencePattern', 'type', 'mandateType', 'billingCycle', 'recurrence', 'recurrance', 'recurrenceRule', 'tenure', 'cycle', 'Recurrence', 'Recurrance']
 const STATUS_KEYS    = ['status', 'Status', 'mandateStatus', 'state', 'active', 'mandateState', 'txnStatus', 'Latest Status', 'latestStatus', 'latest_status']
-const BANK_KEYS      = ['bankName', 'customerBank', 'debitBank', 'bankIfsc', 'bankCode', 'remitterBank', 'payerBank', 'bank', 'bankAccountName', 'ifsc', 'Bank Name', 'Bank', 'Payer Bank']
+const BANK_KEYS      = ['bankName', 'customerBank', 'debitBank', 'bankIfsc', 'bankCode', 'remitterBank', 'payerBank', 'bank', 'bankAccountName', 'ifsc', 'Bank Name', 'Bank', 'Payer Bank', 'Remitter Bank', 'remitter_bank']
 const UPI_KEYS       = ['vpa', 'upiId', 'payeeVpa', 'merchantVpa', 'payerVpa', 'creditorVpa', 'debtorVpa', 'Payee VPA', 'Payer VPA', 'VPA']
 const UMN_KEYS       = ['umn', 'UMN', 'umrn', 'uniqueMandateNumber', 'mandateUrn', 'txnId', 'refId', 'Umn']
 const REF_KEYS       = ['mandateRef', 'mandateId', 'referenceId', 'txnRef', 'id', 'mandateNo', 'seqNo', 'srno', 'complaintId', 'transactionId', 'Mandate Ref', 'Mandate Id']
-const START_KEYS     = ['startDate', 'fromDate', 'validFrom', 'createdDate', 'createDate', 'initiationDate', 'mandateDate', 'Start Date', 'start_date', 'From Date']
+const START_KEYS     = ['startDate', 'fromDate', 'validFrom', 'createdDate', 'createDate', 'initiationDate', 'mandateDate', 'Start Date', 'start_date', 'From Date', 'Creation Date', 'creation_date']
 const END_KEYS       = ['endDate', 'toDate', 'validTill', 'expiryDate', 'expiry', 'validUpto', 'End Date', 'end_date', 'Valid Till', 'Expiry Date']
 const NEXT_DATE_KEYS = ['nextDebitDate', 'nextExecutionDate', 'dueDate', 'nextDate', 'Next Debit Date', 'Next Execution Date', 'Due Date']
+
+// NPCI-specific fields
+const CATEGORY_KEYS      = ['category', 'Category', 'mandateCategory', 'categoryName', 'mandate_category', 'type', 'mandateType', 'Mandate Category']
+const UPI_APP_KEYS       = ['upiAppName', 'UPI App Name', 'upiApp', 'appName', 'app', 'App', 'App Name', 'pspName', 'psp', 'PSP']
+const EXEC_COUNT_KEYS    = ['Total Execution Count', 'totalExecutionCount', 'executionCount', 'total_execution_count', 'Execution Count', 'execCount']
+const EXEC_AMOUNT_KEYS   = ['Total Execution Amount', 'totalExecutionAmount', 'executionAmount', 'total_execution_amount', 'Execution Amount', 'execAmount']
+const LAST_EXEC_DATE_KEYS= ['Last Execution Date', 'lastExecutionDate', 'last_execution_date', 'lastDebitDate', 'lastExecDate']
+const CREATION_DATE_KEYS = ['Creation Date', 'creationDate', 'creation_date', 'createdDate', 'createDate', 'Created Date', 'created_at']
+const IS_PAUSE_KEYS      = ['is_pause', 'isPause', 'canPause', 'pauseAllowed']
+const IS_REVOKE_KEYS     = ['is_revoke', 'isRevoke', 'canRevoke', 'revokeAllowed']
+const REMITTER_BANK_KEYS = ['Remitter Bank', 'remitterBank', 'remitter_bank', 'payerBankName', 'debitBankName']
 
 /**
  * Parse any response shape into a standard mandate array.
@@ -115,6 +126,10 @@ function buildMandate(item) {
     }
   }
 
+  // Also extract bank from Remitter Bank keys (may be more specific than generic BANK_KEYS)
+  const remitterBank = findField(item, REMITTER_BANK_KEYS) || ''
+  if (!bankName && remitterBank) bankName = remitterBank
+
   const mandate = {
     id:            findField(item, REF_KEYS) || uuidv4(),
     merchantName:  merchantName,
@@ -125,12 +140,22 @@ function buildMandate(item) {
     upiHandle:     upiHandle,
     umn:           umn,
     mandateRef:    findField(item, REF_KEYS) || uuidv4(),
-    startDate:     findField(item, START_KEYS) || '',
+    startDate:     findField(item, START_KEYS) || findField(item, CREATION_DATE_KEYS) || '',
     endDate:       findField(item, END_KEYS) || '',
     nextDebitDate: findField(item, NEXT_DATE_KEYS) || '',
     paymentType:   detectPaymentType(findField(item, FREQUENCY_KEYS)),
     source:        'NPCI',
-    rawData:       item
+    // NPCI-specific fields
+    category:           findField(item, CATEGORY_KEYS) || '',
+    upiAppName:         findField(item, UPI_APP_KEYS) || '',
+    totalExecCount:     parseAmount(findField(item, EXEC_COUNT_KEYS)) || 0,
+    totalExecAmount:    parseAmount(findField(item, EXEC_AMOUNT_KEYS)) || 0,
+    lastExecDate:       findField(item, LAST_EXEC_DATE_KEYS) || '',
+    creationDate:       findField(item, CREATION_DATE_KEYS) || findField(item, START_KEYS) || '',
+    canPause:           !!findField(item, IS_PAUSE_KEYS),
+    canRevoke:          !!findField(item, IS_REVOKE_KEYS),
+    remitterBank:       remitterBank || bankName,
+    rawData:            item
   }
 
   // Accept if it has a merchant name, or amount > 0, or has a UPI/UMN reference
@@ -381,8 +406,9 @@ function normalizeFrequency(value) {
   if (lower.includes('half'))   return 'Half-Yearly'
   if (lower.includes('daily') || lower.includes('day')) return 'Daily'
   if (lower.includes('one') || lower.includes('once')) return 'One-Time'
-  if (lower.includes('as presented') || lower.includes('as_presented')) return 'Monthly'
-  return 'Monthly'
+  if (lower.includes('as presented') || lower.includes('as_presented')) return 'As Presented'
+  if (lower === 'custom') return 'Custom'
+  return String(value)  // preserve original if unknown
 }
 
 function normalizeStatus(value) {
