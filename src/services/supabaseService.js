@@ -39,6 +39,7 @@ async function saveMandates(userId, mandates) {
     can_unpause:        m.canUnpause        || false,
     revocation_deep_link: m.revocationDeepLink || null,
     payment_type:       m.paymentType       || 'RECURRING',
+    thread_id:          m.threadId          || null,
     source:             'NPCI',
     raw_data:           m.rawData           || null,
     updated_at:         new Date().toISOString()
@@ -140,4 +141,65 @@ async function logSession(userId, totalFound) {
   if (error) console.error('[Supabase] logSession error (non-fatal):', error.message)
 }
 
-module.exports = { saveMandates, getMandates, updateMandateStatus, getMandatesByStatus, logSession }
+/**
+ * Upsert user's UPI profile into the users table.
+ * Adds vpa, upi_app, bank_name columns if they exist.
+ */
+async function upsertUserProfile(userId, profile) {
+  const { error } = await supabase
+    .from('users')
+    .upsert({
+      id:        userId,
+      vpa:       profile.vpa  || null,
+      upi_app:   profile.app  || null,
+      bank_name: profile.bank || null
+    }, { onConflict: 'id' })
+
+  if (error) {
+    console.error('[Supabase] upsertUserProfile error:', error.message)
+    throw error
+  }
+  console.log(`[Supabase] Profile updated for user ${userId}: vpa=${profile.vpa}`)
+}
+
+/**
+ * Enrich an existing mandate row with data scraped from the NPCI thread page.
+ * Matches by (user_id, umn).
+ */
+async function enrichMandateFromThread(userId, umn, threadId, tableRows) {
+  const extra = {
+    thread_id:  threadId,
+    updated_at: new Date().toISOString()
+  }
+
+  for (const row of (tableRows || [])) {
+    const field = (row.field || '').toLowerCase().trim()
+    const raw   = (row.value || '').trim()
+    const num   = raw.replace(/[₹,\s]/g, '')
+
+    if (field.includes('last execution date')) extra.last_exec_date      = raw
+    if (field.includes('creation date'))       extra.creation_date       = raw
+    if (field.includes('execution count'))     extra.total_exec_count    = parseInt(num)    || 0
+    if (field.includes('execution amount'))    extra.total_exec_amount   = parseFloat(num)  || 0
+    if (field.includes('remitter bank'))       extra.remitter_bank       = raw
+    if (field.includes('upi app'))             extra.upi_app_name        = raw
+    if (field.includes('category'))            extra.category            = raw.toUpperCase()
+    if (field.includes('status'))              extra.status              = raw.toUpperCase()
+    if (field.includes('frequency'))           extra.frequency           = raw.toUpperCase()
+  }
+
+  const { error } = await supabase
+    .from('npci_mandates')
+    .update(extra)
+    .eq('umn', umn)
+    .eq('user_id', userId)
+
+  if (error) {
+    console.error('[Supabase] enrichMandateFromThread error:', error.message)
+    throw error
+  }
+  console.log(`[Supabase] Thread-enriched mandate ${umn}: ${Object.keys(extra).join(', ')}`)
+  return extra
+}
+
+module.exports = { saveMandates, getMandates, updateMandateStatus, getMandatesByStatus, logSession, upsertUserProfile, enrichMandateFromThread }

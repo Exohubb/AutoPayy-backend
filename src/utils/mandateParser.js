@@ -249,7 +249,9 @@ function extractArray(data) {
     }
   }
 
-  // Pass 4 — one level deeper (e.g., {"body": {"mandates": [...]}})
+  // Pass 4 — ONE level deeper (standard single-wrapper)
+  // NOTE: deliberately NOT used for category-grouped — handled by
+  // extractAllFromCategoryGrouped() called from parse() directly
   for (const val of Object.values(data)) {
     if (val && typeof val === 'object' && !Array.isArray(val)) {
       const nested = extractArray(val)
@@ -258,6 +260,42 @@ function extractArray(data) {
   }
 
   return []
+}
+
+/**
+ * NPCI returns mandates grouped by category:
+ * {
+ *   "ENTERTAINMENT & MEDIA": { "count": 1, "mandates": [{...}] },
+ *   "OTHERS":                { "count": 2, "mandates": [{...},{...}] },
+ *   "UTILITIES & BILL PAYMENTS": { "count": 1, "mandates": [{...}] }
+ * }
+ *
+ * extractArray() only finds the FIRST category and stops.
+ * This function collects from ALL categories in one pass.
+ */
+function extractAllFromCategoryGrouped(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return []
+
+  const all = []
+  let isCategoryGrouped = false
+
+  for (const [, val] of Object.entries(data)) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) continue
+
+    // Each category value has shape: { count: N, mandates: [...] }
+    // Try all known array keys inside this nested object
+    const nested = extractArray(val)
+    if (nested.length > 0 && nested.some(i => hasAnyMandateField(i))) {
+      isCategoryGrouped = true
+      all.push(...nested)
+    }
+  }
+
+  if (isCategoryGrouped) {
+    console.log(`[Parser] category-grouped: collected ${all.length} total across all categories`)
+  }
+
+  return all
 }
 
 /**
@@ -571,6 +609,24 @@ function parse(responseData, endpoint) {
     if (item && typeof item === 'object' && !Array.isArray(item)) {
       const m = buildMandate(item)
       if (m) results.push(m)
+    }
+  }
+
+  // ── Pass 1b: NPCI category-grouped response ───────────────────
+  // Handles: {"ENTERTAINMENT & MEDIA":{"mandates":[...]}, "OTHERS":{"mandates":[...]}}
+  // extractArray only finds the FIRST category. If the category-grouped collector
+  // finds MORE items than Pass 1 did, replace results with the full set.
+  if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+    const categoryItems = extractAllFromCategoryGrouped(responseData)
+    if (categoryItems.length > results.length) {
+      console.log(`[Parser] ${endpoint} → category-grouped found ${categoryItems.length} items (replacing Pass 1 result of ${results.length})`)
+      results.length = 0
+      for (const item of categoryItems) {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const m = buildMandate(item)
+          if (m) results.push(m)
+        }
+      }
     }
   }
 

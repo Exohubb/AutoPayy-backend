@@ -371,4 +371,41 @@ router.get('/logs', (_req, res) => {
   )
 })
 
+// ─────────────────────────────────────────────────────────────────
+// POST /api/npci/profile
+// Android sends user's VPA, app, bank scraped from NPCI home page.
+// ─────────────────────────────────────────────────────────────────
+router.post('/profile', authGuard, async (req, res) => {
+  try {
+    const { userId, vpa, app, bank } = req.body
+    if (!userId || !vpa) {
+      return res.status(400).json({ success: false, error: 'userId and vpa are required' })
+    }
+    await supabaseService.upsertUserProfile(userId, { vpa, app, bank })
+    return res.json({ success: true, vpa, app, bank })
+  } catch (err) {
+    console.error('[NPCI] /profile error:', err.message)
+    return res.status(500).json({ success: false, error: err.message })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/npci/thread
+// Android sends scraped table rows from a mandate's thread page.
+// Enriches the existing mandate row with creation date, exec stats, etc.
+// ─────────────────────────────────────────────────────────────────
+router.post('/thread', authGuard, async (req, res) => {
+  try {
+    const { userId, umn, threadId, tableRows } = req.body
+    if (!userId || !umn || !Array.isArray(tableRows)) {
+      return res.status(400).json({ success: false, error: 'userId, umn and tableRows (array) are required' })
+    }
+    const updated = await supabaseService.enrichMandateFromThread(userId, umn, threadId || null, tableRows)
+    return res.json({ success: true, umn, fieldsUpdated: Object.keys(updated) })
+  } catch (err) {
+    console.error('[NPCI] /thread error:', err.message)
+    return res.status(500).json({ success: false, error: err.message })
+  }
+})
+
 module.exports = router
