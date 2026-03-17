@@ -142,84 +142,84 @@ async function logSession(userId, totalFound) {
 }
 
 /**
- * Upsert user's UPI profile into the users table.
- * Adds vpa, upi_app, bank_name columns if they exist.
+ * Enrich mandates with data scraped from the NPCI AI chatbot.
+ * parsedTables is [{ merchantName, rows: [{field, value}] }] from Phase 2.
+ * parseDate converts DD-MM-YYYY → YYYY-MM-DD (passed in from the route).
  */
-async function upsertUserProfile(userId, profile) {
-  const { error } = await supabase
-    .from('users')
-    .upsert({
-      id:        userId,
-      vpa:       profile.vpa  || null,
-      upi_app:   profile.app  || null,
-      bank_name: profile.bank || null
-    }, { onConflict: 'id' })
+async function enrichMandates(userId, parsedTables, parseDate) {
+  const updated = []
 
-  if (error) {
-    console.error('[Supabase] upsertUserProfile error:', error.message)
-    throw error
+  for (const t of (parsedTables || [])) {
+    const rows = t.rows || []
+    if (rows.length === 0) continue
+
+    const extra = { updated_at: new Date().toISOString() }
+    let merchantFromRows = null
+
+    for (const row of rows) {
+      const field = (row.field || '').toLowerCase().trim()
+      const raw   = (row.value || '').trim()
+      const num   = raw.replace(/[₹,\s]/g, '')
+
+      if (field.includes('remitter') || field.includes('bank'))
+        extra.remitter_bank = raw
+      if (field.includes('last exec') || field.includes('last debit') || field.includes('last execution'))
+        extra.last_exec_date = parseDate ? parseDate(raw) : raw
+      if (field.includes('creation') || field.includes('created'))
+        extra.creation_date = parseDate ? parseDate(raw) : raw
+      if (field.includes('validity') || field.includes('end date') || field.includes('valid till') || field.includes('valid upto'))
+        extra.end_date = parseDate ? parseDate(raw) : raw
+      if (field.includes('exec count') || field.includes('execution count'))
+        extra.total_exec_count = parseInt(num) || 0
+      if (field.includes('exec amount') || field.includes('execution amount'))
+        extra.total_exec_amount = parseFloat(num) || 0
+      if (field.includes('recurrence') || field.includes('frequency') || field.includes('recurrance'))
+        extra.frequency = raw.toUpperCase()
+      if (field.includes('status'))
+        extra.status = raw.toUpperCase()
+      if (field.includes('merchant') || field.includes('payee') || field.includes('beneficiary'))
+        merchantFromRows = raw
+    }
+
+    const meaningful = Object.keys(extra).filter(k => k !== 'updated_at')
+    if (meaningful.length === 0) continue
+
+    const merchantName = (t.merchantName || merchantFromRows || '').trim()
+    if (!merchantName) continue
+
+    const { data, error: lookupErr } = await supabase
+      .from('npci_mandates')
+      .select('umn')
+      .eq('user_id', userId)
+      .ilike('merchant_name', merchantName)
+      .limit(1)
+      .maybeSingle()
+
+    if (lookupErr) {
+      console.warn(`[Supabase] enrichMandates lookup error for "${merchantName}":`, lookupErr.message)
+      continue
+    }
+    if (!data) {
+      console.warn(`[Supabase] enrichMandates: no mandate found for merchant "${merchantName}"`)
+      continue
+    }
+
+    const { error: updateErr } = await supabase
+      .from('npci_mandates')
+      .update(extra)
+      .eq('user_id', userId)
+      .eq('umn', data.umn)
+
+    if (updateErr) {
+      console.error(`[Supabase] enrichMandates update error for umn ${data.umn}:`, updateErr.message)
+      continue
+    }
+
+    console.log(`[Supabase] Enriched "${merchantName}" (${data.umn}): ${meaningful.join(', ')}`)
+    updated.push({ merchantName, umn: data.umn, fieldsUpdated: meaningful })
   }
-  console.log(`[Supabase] Profile updated for user ${userId}: vpa=${profile.vpa}`)
+
+  return updated
 }
 
-/**
- * Enrich an existing mandate row with data scraped from the NPCI thread page.
- * Matches by (user_id, umn).
- */
-async function enrichMandateFromThread(userId, umn, threadId, tableRows) {
-  const extra = {
-    thread_id:  threadId,
-    updated_at: new Date().toISOString()
-  }
-
-  for (const row of (tableRows || [])) {
-    const field = (row.field || '').toLowerCase().trim()
-    const raw   = (row.value || '').trim()
-    const num   = raw.replace(/[₹,\s]/g, '')
-
-    if (field.includes('last execution date')) extra.last_exec_date      = raw
-    if (field.includes('creation date'))       extra.creation_date       = raw
-    if (field.includes('execution count'))     extra.total_exec_count    = parseInt(num)    || 0
-    if (field.includes('execution amount'))    extra.total_exec_amount   = parseFloat(num)  || 0
-    if (field.includes('remitter bank'))       extra.remitter_bank       = raw
-    if (field.includes('upi app'))             extra.upi_app_name        = raw
-    if (field.includes('category'))            extra.category            = raw.toUpperCase()
-    if (field.includes('status'))              extra.status              = raw.toUpperCase()
-    if (field.includes('frequency'))           extra.frequency           = raw.toUpperCase()
-  }
-
-  const { error } = await supabase
-    .from('npci_mandates')
-    .update(extra)
-    .eq('umn', umn)
-    .eq('user_id', userId)
-
-  if (error) {
-    console.error('[Supabase] enrichMandateFromThread error:', error.message)
-    throw error
-  }
-  console.log(`[Supabase] Thread-enriched mandate ${umn}: ${Object.keys(extra).join(', ')}`)
-  return extra
-}
-
-/**
- * Look up a mandate's UMN by merchant name when the JS harvest script
- * couldn't extract it from the DOM (returns null if not found).
- */
-async function findUmnByMerchantName(userId, merchantName) {
-  const { data, error } = await supabase
-    .from('npci_mandates')
-    .select('umn')
-    .eq('user_id', userId)
-    .ilike('merchant_name', merchantName.trim())
-    .limit(1)
-    .maybeSingle()
-
-  if (error) {
-    console.warn('[Supabase] findUmnByMerchantName error:', error.message)
-    return null
-  }
-  return data?.umn || null
-}
-
-module.exports = { saveMandates, getMandates, updateMandateStatus, getMandatesByStatus, logSession, upsertUserProfile, enrichMandateFromThread, findUmnByMerchantName }
+module.exports = { saveMandates, getMandates, updateMandateStatus, getMandatesByStatus, logSession, enrichMandates }

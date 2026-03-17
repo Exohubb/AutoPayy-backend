@@ -1,7 +1,6 @@
 'use strict'
 const express        = require('express')
 const router         = express.Router()
-const npciService    = require('../services/npciService')
 const supabaseService = require('../services/supabaseService')
 const mandateParser  = require('../utils/mandateParser')
 
@@ -179,37 +178,6 @@ router.post('/extract', authGuard, async (req, res) => {
 })
 
 // ─────────────────────────────────────────────────────────────────
-// POST /api/npci/fetch
-// Secondary flow: backend calls NPCI directly using cookies
-// ─────────────────────────────────────────────────────────────────
-router.post('/fetch', authGuard, async (req, res) => {
-  try {
-    const { cookies, userId } = req.body
-    if (!cookies || !userId) {
-      return res.status(400).json({ success: false, error: 'Missing cookies or userId' })
-    }
-
-    console.log(`[NPCI] /fetch for user: ${userId}`)
-    const mandates = await npciService.fetchAllMandates(cookies)
-    console.log(`[NPCI] /fetch found ${mandates.length} mandates`)
-
-    try {
-      if (mandates.length > 0) await supabaseService.saveMandates(userId, mandates)
-      await supabaseService.logSession(userId, mandates.length)
-    } catch (dbErr) {
-      console.error('[NPCI] Supabase save (non-fatal):', dbErr.message)
-    }
-
-    return res.json({ success: true, mandates, totalFound: mandates.length })
-  } catch (err) {
-    console.error('[NPCI] /fetch error:', err.message)
-    return res.status(500).json({
-      success: false, error: 'Internal server error', message: err.message
-    })
-  }
-})
-
-// ─────────────────────────────────────────────────────────────────
 // GET /api/npci/mandates/:userId
 // Android loads saved mandates without re-fetching NPCI
 // ─────────────────────────────────────────────────────────────────
@@ -372,58 +340,37 @@ router.get('/logs', (_req, res) => {
 })
 
 // ─────────────────────────────────────────────────────────────────
-// POST /api/npci/profile
-// Android sends user's VPA, app, bank scraped from NPCI home page.
+// POST /api/npci/chat
+// Phase 2: Android sends AI-chat-scraped mandate details.
+// Body: { userId, source: 'chat_ai', mandates: [{merchantName, rows:[{field,value}]}] }
+// Backend resolves each mandate by merchant name and enriches the row.
+// DD-MM-YYYY dates are converted to ISO YYYY-MM-DD before saving.
 // ─────────────────────────────────────────────────────────────────
-router.post('/profile', authGuard, async (req, res) => {
+router.post('/chat', authGuard, async (req, res) => {
   try {
-    const { userId, vpa, app, bank } = req.body
-    if (!userId || !vpa) {
-      return res.status(400).json({ success: false, error: 'userId and vpa are required' })
-    }
-    await supabaseService.upsertUserProfile(userId, { vpa, app, bank })
-    return res.json({ success: true, vpa, app, bank })
-  } catch (err) {
-    console.error('[NPCI] /profile error:', err.message)
-    return res.status(500).json({ success: false, error: err.message })
-  }
-})
-
-// ─────────────────────────────────────────────────────────────────
-// POST /api/npci/thread
-// Android sends scraped table rows from a mandate's thread page.
-// Enriches the existing mandate row with creation date, exec stats, etc.
-// UMN may be "UNKNOWN_xxx" when JS couldn't extract it from DOM —
-// falls back to merchant name lookup in Supabase.
-// ─────────────────────────────────────────────────────────────────
-router.post('/thread', authGuard, async (req, res) => {
-  try {
-    const { userId, umn, threadId, tableRows, merchantName } = req.body
-    if (!userId || !Array.isArray(tableRows)) {
-      return res.status(400).json({ success: false, error: 'userId and tableRows (array) are required' })
-    }
-
-    // Resolve UMN — JS sends UNKNOWN_<name> when it can't extract from DOM
-    let resolvedUmn = umn
-    if (!resolvedUmn || resolvedUmn.startsWith('UNKNOWN_')) {
-      const nameFallback = merchantName || (resolvedUmn || '').replace(/^UNKNOWN_/, '')
-      if (nameFallback) {
-        resolvedUmn = await supabaseService.findUmnByMerchantName(userId, nameFallback)
-        console.log(`[NPCI] /thread UMN resolved by merchant name "${nameFallback}" → ${resolvedUmn}`)
-      }
-    }
-
-    if (!resolvedUmn) {
-      return res.status(404).json({
+    const { userId, mandates } = req.body
+    if (!userId || !Array.isArray(mandates)) {
+      return res.status(400).json({
         success: false,
-        error: `No mandate found for merchant: ${merchantName || umn}`
+        error: 'userId and mandates (array) are required'
       })
     }
 
-    const updated = await supabaseService.enrichMandateFromThread(userId, resolvedUmn, threadId || null, tableRows)
-    return res.json({ success: true, umn: resolvedUmn, fieldsUpdated: Object.keys(updated) })
+    // Convert DD-MM-YYYY → YYYY-MM-DD; pass through ISO or unknown formats unchanged
+    function parseDate(d) {
+      if (!d || typeof d !== 'string') return d
+      const p = d.trim().split('-')
+      if (p.length === 3 && p[0].length === 2) return `${p[2]}-${p[1]}-${p[0]}`
+      return d
+    }
+
+    console.log(`[NPCI] /chat enriching ${mandates.length} mandate tables for user: ${userId}`)
+    const results = await supabaseService.enrichMandates(userId, mandates, parseDate)
+    console.log(`[NPCI] /chat updated ${results.length} mandates`)
+
+    return res.json({ success: true, updated: results.length, details: results })
   } catch (err) {
-    console.error('[NPCI] /thread error:', err.message)
+    console.error('[NPCI] /chat error:', err.message)
     return res.status(500).json({ success: false, error: err.message })
   }
 })
