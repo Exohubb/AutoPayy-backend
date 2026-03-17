@@ -393,15 +393,35 @@ router.post('/profile', authGuard, async (req, res) => {
 // POST /api/npci/thread
 // Android sends scraped table rows from a mandate's thread page.
 // Enriches the existing mandate row with creation date, exec stats, etc.
+// UMN may be "UNKNOWN_xxx" when JS couldn't extract it from DOM —
+// falls back to merchant name lookup in Supabase.
 // ─────────────────────────────────────────────────────────────────
 router.post('/thread', authGuard, async (req, res) => {
   try {
-    const { userId, umn, threadId, tableRows } = req.body
-    if (!userId || !umn || !Array.isArray(tableRows)) {
-      return res.status(400).json({ success: false, error: 'userId, umn and tableRows (array) are required' })
+    const { userId, umn, threadId, tableRows, merchantName } = req.body
+    if (!userId || !Array.isArray(tableRows)) {
+      return res.status(400).json({ success: false, error: 'userId and tableRows (array) are required' })
     }
-    const updated = await supabaseService.enrichMandateFromThread(userId, umn, threadId || null, tableRows)
-    return res.json({ success: true, umn, fieldsUpdated: Object.keys(updated) })
+
+    // Resolve UMN — JS sends UNKNOWN_<name> when it can't extract from DOM
+    let resolvedUmn = umn
+    if (!resolvedUmn || resolvedUmn.startsWith('UNKNOWN_')) {
+      const nameFallback = merchantName || (resolvedUmn || '').replace(/^UNKNOWN_/, '')
+      if (nameFallback) {
+        resolvedUmn = await supabaseService.findUmnByMerchantName(userId, nameFallback)
+        console.log(`[NPCI] /thread UMN resolved by merchant name "${nameFallback}" → ${resolvedUmn}`)
+      }
+    }
+
+    if (!resolvedUmn) {
+      return res.status(404).json({
+        success: false,
+        error: `No mandate found for merchant: ${merchantName || umn}`
+      })
+    }
+
+    const updated = await supabaseService.enrichMandateFromThread(userId, resolvedUmn, threadId || null, tableRows)
+    return res.json({ success: true, umn: resolvedUmn, fieldsUpdated: Object.keys(updated) })
   } catch (err) {
     console.error('[NPCI] /thread error:', err.message)
     return res.status(500).json({ success: false, error: err.message })

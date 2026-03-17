@@ -202,4 +202,24 @@ async function enrichMandateFromThread(userId, umn, threadId, tableRows) {
   return extra
 }
 
-module.exports = { saveMandates, getMandates, updateMandateStatus, getMandatesByStatus, logSession, upsertUserProfile, enrichMandateFromThread }
+/**
+ * Look up a mandate's UMN by merchant name when the JS harvest script
+ * couldn't extract it from the DOM (returns null if not found).
+ */
+async function findUmnByMerchantName(userId, merchantName) {
+  const { data, error } = await supabase
+    .from('npci_mandates')
+    .select('umn')
+    .eq('user_id', userId)
+    .ilike('merchant_name', merchantName.trim())
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    console.warn('[Supabase] findUmnByMerchantName error:', error.message)
+    return null
+  }
+  return data?.umn || null
+}
+
+module.exports = { saveMandates, getMandates, updateMandateStatus, getMandatesByStatus, logSession, upsertUserProfile, enrichMandateFromThread, findUmnByMerchantName }
