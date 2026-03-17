@@ -527,7 +527,10 @@ function buildMandate(item) {
   if (umn.includes('@')) {
     if (!upiHandle) upiHandle = umn
     const suffix = umn.split('@')[1] || ''
-    if (!bankName) bankName = UMN_BANK_MAP[suffix.toLowerCase()] || suffix.toUpperCase()
+    // API field has priority (already set above via findField).
+    // Only fall back to UMN map when the API gave us NOTHING.
+    // Do NOT use suffix.toUpperCase() — that produces garbage like "PTSBI" / "OKICICI".
+    if (!bankName) bankName = UMN_BANK_MAP[suffix.toLowerCase()] || ''
   }
 
   // ── Amount ───────────────────────────────────────────────────
