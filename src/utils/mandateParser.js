@@ -493,106 +493,75 @@ function parseTextContent(scrapeData) {
 function buildMandate(item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return null
 
-  // ── Merchant name ────────────────────────────────────────────
-  let merchantName = findField(item, MERCHANT_KEYS) || ''
+  // Normalize: collapse spaces / underscores / hyphens, lowercase
+  const norm     = s => s.toLowerCase().replace(/[\s_\-]+/g, '')
+  const itemKeys = Object.keys(item)
+  const itemNorm = itemKeys.map(k => norm(k))
 
-  // Fallback: derive from UPI handle
-  if (!merchantName) {
-    const upi = findField(item, UPI_KEYS) || ''
-    if (upi.includes('@')) merchantName = upi.split('@')[0]
-  }
-
-  // Fallback: scan all keys for name-like fields
-  if (!merchantName) {
-    for (const key of Object.keys(item)) {
-      const v  = item[key]
-      const kl = key.toLowerCase()
-      if (typeof v === 'string' && v.length > 2 && v.length < 100 &&
-          (kl.includes('name') || kl.includes('merchant') || kl.includes('creditor') ||
-           kl.includes('biller') || kl.includes('org') || kl.includes('company') ||
-           kl.includes('payee'))) {
-        merchantName = v
-        break
+  function get(keys) {
+    for (const k of keys) {
+      const idx = itemNorm.indexOf(norm(k))
+      if (idx !== -1) {
+        const val = item[itemKeys[idx]]
+        if (val !== null && val !== undefined && val !== '') return val
       }
     }
-  }
-
-  if (!merchantName) merchantName = 'Unknown Merchant'
-
-  // ── UMN + bank derivation ────────────────────────────────────
-  const umn       = String(findField(item, UMN_KEYS)  || '')
-  let   bankName  = String(findField(item, BANK_KEYS) || '')
-  let   upiHandle = String(findField(item, UPI_KEYS)  || '')
-
-  if (umn.includes('@')) {
-    if (!upiHandle) upiHandle = umn
-    const suffix = umn.split('@')[1] || ''
-    // API field has priority (already set above via findField).
-    // Only fall back to UMN map when the API gave us NOTHING.
-    // Do NOT use suffix.toUpperCase() — that produces garbage like "PTSBI" / "OKICICI".
-    if (!bankName) bankName = UMN_BANK_MAP[suffix.toLowerCase()] || ''
-  }
-
-  // ── Amount ───────────────────────────────────────────────────
-  const amount = parseAmount(findField(item, AMOUNT_KEYS))
-
-  // ── Accept gate ──────────────────────────────────────────────
-  // Reject only if absolutely nothing meaningful exists
-  if (merchantName === 'Unknown Merchant' && amount <= 0 && !umn && !upiHandle) {
     return null
   }
 
-  // ── Enriched NPCI fields ─────────────────────────────────────
-  const rawFreq      = findField(item, FREQUENCY_KEYS)
-  const frequency    = normalizeFrequency(rawFreq)
-  const rawStatus    = findField(item, STATUS_KEYS)
-  const status       = normalizeStatus(rawStatus)
-  const canPause     = !!(findField(item, CAN_PAUSE_KEYS))
-  const canRevoke    = !!(findField(item, CAN_REVOKE_KEYS))
-  const canUnpause   = !!(findField(item, CAN_UNPAUSE_KEYS))
-  const upiAppName   = String(findField(item, UPI_APP_KEYS)    || '')
-  const rawCategory  = String(findField(item, CATEGORY_KEYS)   || '')
-  const category     = rawCategory || inferCategory(merchantName)
-  const totalExecCount  = parseAmount(findField(item, EXEC_COUNT_KEYS))
-  const totalExecAmount = parseAmount(findField(item, EXEC_AMOUNT_KEYS))
-  const lastExecDate    = String(findField(item, LAST_EXEC_KEYS)   || '')
-  const creationDate    = String(findField(item, CREATION_KEYS)    || findField(item, START_KEYS) || '')
-  const startDate       = String(findField(item, START_KEYS)       || creationDate)
-  const endDate         = String(findField(item, END_KEYS)         || '')
-  const nextDebitDate   = String(findField(item, NEXT_DATE_KEYS)   || '')
-  const mandateRef      = String(findField(item, REF_KEYS)         || umn || uuidv4())
+  // UMN is mandatory for NPCI mandates — rejects garbage chat/thread objects
+  const umn = get(['umn'])
+  if (!umn) return null
+
+  const merchantName = get([
+    'payee name', 'payeename', 'merchant_name', 'merchantname', 'merchant',
+    'payee', 'creditorname', 'billername', 'description', 'org'
+  ]) || 'Unknown Merchant'
+
+  const rawFreq   = get(['recurrance', 'recurrence', 'frequency', 'mandatetype']) || 'CUSTOM'
+  const rawStatus = get(['latest status', 'lateststatus', 'status', 'mandatestatus']) || 'ACTIVE'
+  const rawCat    = get(['category', 'mandatecategory'])
+  const amount    = parseAmount(get(['amount', 'mandateamount', 'maxamount', 'limitamount']))
 
   return {
-    id:               mandateRef,
-    merchantName:     merchantName.trim(),
-    amount,
-    frequency,
-    status,
-    bankName,
-    upiHandle,
+    id:          String(umn),
     umn,
-    mandateRef,
-    startDate,
-    endDate,
-    nextDebitDate,
-    paymentType:      detectPaymentType(rawFreq),
-    source:           'NPCI',
-    // ── enriched ─────────────────────────────────────────────
-    category,
-    upiAppName,
-    totalExecCount,
-    totalExecAmount,
-    lastExecDate,
-    creationDate,
-    canPause,
-    canRevoke,
-    canUnpause,
-    remitterBank:     bankName,
+    mandateRef:  String(umn),   // UMN = canonical NPCI key; drives upsert dedup on user_id,mandate_ref
+
+    merchantName,
+    amount,
+    frequency:   normalizeFrequency(rawFreq),
+    status:      normalizeStatus(rawStatus),
+    category:    rawCat ? String(rawCat).toUpperCase() : inferCategory(merchantName),
+
+    upiAppName:  get(['app', 'upiapp', 'upiappname', 'upi_app_name', 'psp']) || null,
+    upiHandle:   get(['vpa', 'upiid', 'payeevpa', 'payer vpa', 'merchantvpa']) || null,
+
+    totalExecCount:  parseAmount(get(['total execution count', 'totalexecutioncount', 'executioncount', 'execcount'])),
+    totalExecAmount: parseAmount(get(['total execution amount', 'totalexecutionamount', 'executionamount', 'execamount'])),
+
+    canPause:   !!(get(['is_pause',   'ispause',   'canpause',   'pauseallowed'])),
+    canRevoke:  !!(get(['is_revoke',  'isrevoke',  'canrevoke',  'revokeallowed'])),
+    canUnpause: !!(get(['is_unpause', 'isunpause', 'canunpause', 'unpauseallowed'])),
+
     revocationDeepLink: buildRevocationDeepLink(umn, merchantName, amount),
-    rawData: {
-      merchant: merchantName, amount, umn,
-      status: rawStatus || '', frequency: rawFreq || ''
-    }
+
+    paymentType: detectPaymentType(rawFreq),
+    source:      'NPCI',
+
+    // ── Date fields — may be present in some NPCI response variants ──
+    startDate:     get(['startdate', 'fromdate', 'validfrom']) || null,
+    endDate:       get(['enddate',   'todate',   'validtill',  'expirydate']) || null,
+    nextDebitDate: get(['nextdebitdate', 'nextexecutiondate',  'duedate']) || null,
+
+    // ── Thread-only fields — always null at Phase 1, filled by /thread ──
+    remitterBank:  null,
+    lastExecDate:  null,
+    creationDate:  null,
+    threadId:      null,
+    bankName:      null,
+
+    rawData: { umn, merchant: merchantName, amount, status: rawStatus, frequency: rawFreq }
   }
 }
 
