@@ -1,5 +1,6 @@
 'use strict'
 const { createClient } = require('@supabase/supabase-js')
+const { unescapeUnicode } = require('../utils/mandateParser')
 
 // ── Bug fix: was missing closing ) on createClient() ─────────────
 const supabase = createClient(
@@ -159,7 +160,8 @@ async function enrichMandates(userId, parsedTables, parseDate) {
     for (const row of rows) {
       const field = (row.field || '').toLowerCase().trim()
       const raw   = (row.value || '').trim()
-      const num   = raw.replace(/[₹,\s]/g, '')
+      // Unescape literal \uXXXX sequences (e.g., \u20B9 → ₹) before stripping currency symbols
+      const num   = unescapeUnicode(raw).replace(/[₹,\s]/g, '')
 
       if (field.includes('remitter') || field.includes('bank'))
         extra.remitter_bank = raw

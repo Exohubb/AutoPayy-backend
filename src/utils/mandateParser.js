@@ -307,12 +307,24 @@ function hasAnyMandateField(obj) {
 }
 
 /**
- * Parse amount from: number, "8300", "8,300", "₹ 8,300.00", etc.
+ * Unescape literal \uXXXX sequences in a string.
+ * The Android DOM scraper may forward text that contains literal backslash-u
+ * sequences (e.g., \u20B9 for ₹) that were never decoded by the browser.
+ * JSON.parse handles \uXXXX in JSON strings, but DOM-scraped text passed
+ * through the JavascriptInterface as a raw string bypasses that step.
+ */
+function unescapeUnicode(str) {
+  return String(str).replace(/\\u([0-9a-fA-F]{4})/gi, (_, hex) =>
+    String.fromCharCode(parseInt(hex, 16)))
+}
+
+/**
+ * Parse amount from: number, "8300", "8,300", "₹ 8,300.00", "\u20B9 8,300", etc.
  */
 function parseAmount(val) {
   if (val === null || val === undefined || val === '') return 0
   if (typeof val === 'number') return isNaN(val) ? 0 : val
-  const n = parseFloat(String(val).replace(/[₹,\s]/g, ''))
+  const n = parseFloat(unescapeUnicode(val).replace(/[₹,\s]/g, ''))
   return isNaN(n) ? 0 : n
 }
 
@@ -650,4 +662,4 @@ function parse(responseData, endpoint) {
   return deduped
 }
 
-module.exports = { parse }
+module.exports = { parse, unescapeUnicode }
