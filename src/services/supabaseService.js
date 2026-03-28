@@ -165,25 +165,14 @@ async function incrementFetchCount(userId, mandateCount) {
 
 /**
  * Upsert user record. Called on every Google Sign-in from the Android app.
- * Only creates/updates non-deleted fields — is_deleted flag is managed separately.
+ * Signing in ALWAYS resets is_deleted=false — if the user deleted their account
+ * and signs in again they are reactivated. deleteAccount() is the only path that
+ * sets is_deleted=true again.
  */
 async function upsertUser(userId, userData) {
   const { name, email } = userData
 
-  // Check if a non-deleted row exists for this userId
-  const { data: existing } = await supabase
-    .from('users')
-    .select('id, is_deleted')
-    .eq('id', userId)
-    .maybeSingle()
-
-  if (existing && existing.is_deleted) {
-    console.warn(`[Supabase] upsertUser: userId ${userId} is marked deleted — skipping`)
-    return
-  }
-
-  // Try full upsert (with all new columns). Falls back to minimal upsert
-  // if the SQL patch hasn't been run yet (email/is_deleted columns missing).
+  // Always upsert — no is_deleted skip. Signing in reactivates the account.
   const { error } = await supabase
     .from('users')
     .upsert({
@@ -191,12 +180,13 @@ async function upsertUser(userId, userData) {
       name:       name  || null,
       email:      email || null,
       last_seen:  new Date().toISOString(),
-      is_deleted: false
+      is_deleted: false,
+      deleted_at: null          // clear deletion timestamp on re-login
     }, { onConflict: 'id', ignoreDuplicates: false })
 
   if (error) {
     console.warn('[Supabase] upsertUser full upsert failed, trying minimal:', error.message)
-    // Fallback: minimal upsert without new columns
+    // Fallback: minimal upsert without newer columns
     const { error: e2 } = await supabase
       .from('users')
       .upsert({
@@ -212,6 +202,7 @@ async function upsertUser(userId, userData) {
 
   console.log(`[Supabase] Upserted user ${userId}`)
 }
+
 
 /**
  * Soft-delete a user account:
