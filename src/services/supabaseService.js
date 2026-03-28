@@ -2,7 +2,6 @@
 const { createClient } = require('@supabase/supabase-js')
 const { unescapeUnicode } = require('../utils/mandateParser')
 
-// ── Bug fix: was missing closing ) on createClient() ─────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY  // service role key — bypasses RLS
@@ -11,6 +10,7 @@ const supabase = createClient(
 /**
  * Upsert mandates. Conflict on (user_id, mandate_ref).
  * UMN is the NPCI canonical identity — prefer it as the conflict key.
+ * Columns removed: bank_name, upi_handle, next_debit_date, start_date, end_date, thread_id
  */
 async function saveMandates(userId, mandates) {
   if (!mandates || mandates.length === 0) return
@@ -23,24 +23,18 @@ async function saveMandates(userId, mandates) {
     amount:             m.amount,
     frequency:          m.frequency,
     status:             m.status,
-    bank_name:          m.bankName          || null,
-    upi_handle:         m.upiHandle         || null,
-    next_debit_date:    m.nextDebitDate      || null,
-    start_date:         m.startDate         || null,
-    end_date:           m.endDate           || null,
     creation_date:      m.creationDate      || null,
     last_exec_date:     m.lastExecDate      || null,
     total_exec_count:   m.totalExecCount    || 0,
     total_exec_amount:  m.totalExecAmount   || 0,
     category:           m.category          || 'OTHERS',
     upi_app_name:       m.upiAppName        || null,
-    remitter_bank:      m.remitterBank      || m.bankName || null,
+    remitter_bank:      m.remitterBank      || null,
     can_pause:          m.canPause          || false,
     can_revoke:         m.canRevoke         || false,
     can_unpause:        m.canUnpause        || false,
     revocation_deep_link: m.revocationDeepLink || null,
     payment_type:       m.paymentType       || 'RECURRING',
-    thread_id:          m.threadId          || null,
     source:             'NPCI',
     raw_data:           m.rawData           || null,
     updated_at:         new Date().toISOString()
@@ -79,11 +73,6 @@ async function getMandates(userId) {
     amount:             parseFloat(row.amount)          || 0,
     frequency:          row.frequency,
     status:             row.status,
-    bankName:           row.bank_name,
-    upiHandle:          row.upi_handle,
-    nextDebitDate:      row.next_debit_date,
-    startDate:          row.start_date,
-    endDate:            row.end_date,
     creationDate:       row.creation_date,
     lastExecDate:       row.last_exec_date,
     totalExecCount:     row.total_exec_count  || 0,
@@ -143,9 +132,128 @@ async function logSession(userId, totalFound) {
 }
 
 /**
+ * Increment npci_fetch_count and refresh mandate_count for a user.
+ * Called automatically after every successful mandate save.
+ */
+async function incrementFetchCount(userId, mandateCount) {
+  // Get current fetch count
+  const { data: user, error: fetchErr } = await supabase
+    .from('users')
+    .select('npci_fetch_count')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (fetchErr) {
+    console.warn('[Supabase] incrementFetchCount lookup error (non-fatal):', fetchErr.message)
+    return
+  }
+
+  const currentCount = (user && user.npci_fetch_count) ? user.npci_fetch_count : 0
+
+  const { error } = await supabase
+    .from('users')
+    .update({
+      npci_fetch_count: currentCount + 1,
+      mandate_count:    mandateCount,
+      last_seen:        new Date().toISOString()
+    })
+    .eq('id', userId)
+
+  if (error) console.warn('[Supabase] incrementFetchCount update error (non-fatal):', error.message)
+  else console.log(`[Supabase] User ${userId} fetch_count=${currentCount + 1} mandate_count=${mandateCount}`)
+}
+
+/**
+ * Upsert user record. Called on every Google Sign-in from the Android app.
+ * Only creates/updates non-deleted fields — is_deleted flag is managed separately.
+ */
+async function upsertUser(userId, userData) {
+  const { name, email } = userData
+
+  // Check if a non-deleted row exists for this userId
+  const { data: existing } = await supabase
+    .from('users')
+    .select('id, is_deleted')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (existing && existing.is_deleted) {
+    // This exact userId is the deleted account — do not restore it.
+    // (Android should create a new auth user on re-sign-in, so this shouldn't happen
+    //  unless Supabase reuses the same auth UID, which it won't for a deleted account.)
+    console.warn(`[Supabase] upsertUser: userId ${userId} is marked deleted — skipping`)
+    return
+  }
+
+  const { error } = await supabase
+    .from('users')
+    .upsert({
+      id:        userId,
+      name:      name  || null,
+      email:     email || null,
+      last_seen: new Date().toISOString()
+    }, { onConflict: 'id', ignoreDuplicates: false })
+
+  if (error) {
+    console.error('[Supabase] upsertUser error:', error.message)
+    throw error
+  }
+
+  console.log(`[Supabase] Upserted user ${userId}`)
+}
+
+/**
+ * Soft-delete a user account:
+ * - Sets is_deleted=true, deleted_at=now() on the user row
+ * - Deletes ALL their mandates permanently
+ * The user row itself is KEPT for audit trail.
+ */
+async function deleteAccount(userId) {
+  // 1. Soft-delete the user row
+  const { error: userErr } = await supabase
+    .from('users')
+    .update({
+      is_deleted: true,
+      deleted_at: new Date().toISOString()
+    })
+    .eq('id', userId)
+
+  if (userErr) {
+    console.error('[Supabase] deleteAccount user update error:', userErr.message)
+    throw userErr
+  }
+
+  // 2. Hard-delete all mandates for this user
+  const { error: mandateErr } = await supabase
+    .from('npci_mandates')
+    .delete()
+    .eq('user_id', userId)
+
+  if (mandateErr) {
+    console.error('[Supabase] deleteAccount mandates delete error:', mandateErr.message)
+    throw mandateErr
+  }
+
+  // 3. Delete sessions too
+  const { error: sessionErr } = await supabase
+    .from('npci_sessions')
+    .delete()
+    .eq('user_id', userId)
+
+  if (sessionErr) {
+    console.warn('[Supabase] deleteAccount sessions delete error (non-fatal):', sessionErr.message)
+  }
+
+  console.log(`[Supabase] Account deleted for user ${userId}`)
+}
+
+/**
  * Enrich mandates with data scraped from the NPCI AI chatbot.
  * parsedTables is [{ merchantName, rows: [{field, value}] }] from Phase 2.
  * parseDate converts DD-MM-YYYY → YYYY-MM-DD (passed in from the route).
+ *
+ * FIX: Added 'upi app name' / 'psp' / 'app' field handler so upi_app_name
+ *      gets populated from the AI chat phase (previously missing).
  */
 async function enrichMandates(userId, parsedTables, parseDate) {
   const updated = []
@@ -160,7 +268,6 @@ async function enrichMandates(userId, parsedTables, parseDate) {
     for (const row of rows) {
       const field = (row.field || '').toLowerCase().trim()
       const raw   = (row.value || '').trim()
-      // Unescape literal \uXXXX sequences (e.g., \u20B9 → ₹) before stripping currency symbols
       const num   = unescapeUnicode(raw).replace(/[₹,\s]/g, '')
 
       if (field.includes('remitter') || field.includes('bank'))
@@ -169,8 +276,6 @@ async function enrichMandates(userId, parsedTables, parseDate) {
         extra.last_exec_date = parseDate ? parseDate(raw) : raw
       if (field.includes('creation') || field.includes('created'))
         extra.creation_date = parseDate ? parseDate(raw) : raw
-      if (field.includes('validity') || field.includes('end date') || field.includes('valid till') || field.includes('valid upto'))
-        extra.end_date = parseDate ? parseDate(raw) : raw
       if (field.includes('exec count') || field.includes('execution count'))
         extra.total_exec_count = parseInt(num) || 0
       if (field.includes('exec amount') || field.includes('execution amount'))
@@ -181,6 +286,10 @@ async function enrichMandates(userId, parsedTables, parseDate) {
         extra.status = raw.toUpperCase()
       if (field.includes('merchant') || field.includes('payee') || field.includes('beneficiary'))
         merchantFromRows = raw
+      // ── FIX: capture UPI App Name / PSP / App field ──────────────
+      if (field.includes('upi app') || field.includes('app name') || field === 'app' ||
+          field.includes('psp') || field === 'upi_app_name')
+        extra.upi_app_name = raw
     }
 
     const meaningful = Object.keys(extra).filter(k => k !== 'updated_at')
@@ -224,4 +333,14 @@ async function enrichMandates(userId, parsedTables, parseDate) {
   return updated
 }
 
-module.exports = { saveMandates, getMandates, updateMandateStatus, getMandatesByStatus, logSession, enrichMandates }
+module.exports = {
+  saveMandates,
+  getMandates,
+  updateMandateStatus,
+  getMandatesByStatus,
+  logSession,
+  enrichMandates,
+  incrementFetchCount,
+  upsertUser,
+  deleteAccount
+}

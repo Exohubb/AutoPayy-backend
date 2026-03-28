@@ -161,6 +161,7 @@ router.post('/extract', authGuard, async (req, res) => {
     try {
       if (uniqueMandates.length > 0) {
         await supabaseService.saveMandates(userId, uniqueMandates)
+        await supabaseService.incrementFetchCount(userId, uniqueMandates.length)
       }
       await supabaseService.logSession(userId, uniqueMandates.length)
     } catch (dbErr) {
@@ -371,6 +372,44 @@ router.post('/chat', authGuard, async (req, res) => {
     return res.json({ success: true, updated: results.length, details: results })
   } catch (err) {
     console.error('[NPCI] /chat error:', err.message)
+    return res.status(500).json({ success: false, error: err.message })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/npci/user/sync
+// Called on every Google Sign-in from Android to upsert the user row.
+// Body: { userId, name, email }
+// ─────────────────────────────────────────────────────────────────
+router.post('/user/sync', authGuard, async (req, res) => {
+  try {
+    const { userId, name, email } = req.body
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId is required' })
+    }
+    await supabaseService.upsertUser(userId, { name, email })
+    return res.json({ success: true })
+  } catch (err) {
+    console.error('[NPCI] /user/sync error:', err.message)
+    return res.status(500).json({ success: false, error: err.message })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────
+// DELETE /api/npci/user/delete
+// Soft-deletes the user account and hard-deletes all their mandates.
+// Body: { userId }
+// ─────────────────────────────────────────────────────────────────
+router.delete('/user/delete', authGuard, async (req, res) => {
+  try {
+    const { userId } = req.body
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId is required' })
+    }
+    await supabaseService.deleteAccount(userId)
+    return res.json({ success: true, message: 'Account deleted' })
+  } catch (err) {
+    console.error('[NPCI] /user/delete error:', err.message)
     return res.status(500).json({ success: false, error: err.message })
   }
 })

@@ -461,9 +461,9 @@ function parseTextContent(scrapeData) {
       const m   = {
         id: uuidv4(), merchantName: 'Unknown', amount: 0,
         frequency: 'MONTHLY', status: 'ACTIVE',
-        bankName: '', upiHandle: '', umn: '',
-        mandateRef: uuidv4(), startDate: '', endDate: '',
-        nextDebitDate: '', paymentType: 'RECURRING',
+        remitterBank: '', upiAppName: '', umn: '',
+        mandateRef: uuidv4(),
+        paymentType: 'RECURRING',
         source: 'NPCI', category: 'OTHERS',
         rawData: { tableRow: row, headers: table[0] }
       }
@@ -480,17 +480,11 @@ function parseTextContent(scrapeData) {
         else if (h.includes('status') || h.includes('state'))
           m.status = normalizeStatus(v)
         else if (h.includes('bank') || h.includes('remit'))
-          m.bankName = v
-        else if (h.includes('vpa') || h.includes('upi'))
-          m.upiHandle = v
+          m.remitterBank = v
+        else if (h.includes('app') || h.includes('psp'))
+          m.upiAppName = v
         else if (h.includes('umn') || h.includes('urn'))
           m.umn = m.mandateRef = v
-        else if (h.includes('start') || h.includes('creat') || h.includes('from'))
-          m.startDate = v
-        else if (h.includes('end') || h.includes('expir') || h.includes('to'))
-          m.endDate = v
-        else if (h.includes('next') || h.includes('due'))
-          m.nextDebitDate = v
       }
       if (m.merchantName !== 'Unknown' || m.amount > 0) results.push(m)
     }
