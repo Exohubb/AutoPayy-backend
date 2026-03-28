@@ -178,25 +178,36 @@ async function upsertUser(userId, userData) {
     .maybeSingle()
 
   if (existing && existing.is_deleted) {
-    // This exact userId is the deleted account — do not restore it.
-    // (Android should create a new auth user on re-sign-in, so this shouldn't happen
-    //  unless Supabase reuses the same auth UID, which it won't for a deleted account.)
     console.warn(`[Supabase] upsertUser: userId ${userId} is marked deleted — skipping`)
     return
   }
 
+  // Try full upsert (with all new columns). Falls back to minimal upsert
+  // if the SQL patch hasn't been run yet (email/is_deleted columns missing).
   const { error } = await supabase
     .from('users')
     .upsert({
-      id:        userId,
-      name:      name  || null,
-      email:     email || null,
-      last_seen: new Date().toISOString()
+      id:         userId,
+      name:       name  || null,
+      email:      email || null,
+      last_seen:  new Date().toISOString(),
+      is_deleted: false
     }, { onConflict: 'id', ignoreDuplicates: false })
 
   if (error) {
-    console.error('[Supabase] upsertUser error:', error.message)
-    throw error
+    console.warn('[Supabase] upsertUser full upsert failed, trying minimal:', error.message)
+    // Fallback: minimal upsert without new columns
+    const { error: e2 } = await supabase
+      .from('users')
+      .upsert({
+        id:        userId,
+        name:      name || null,
+        last_seen: new Date().toISOString()
+      }, { onConflict: 'id', ignoreDuplicates: false })
+    if (e2) {
+      console.error('[Supabase] upsertUser minimal upsert also failed:', e2.message)
+      throw e2
+    }
   }
 
   console.log(`[Supabase] Upserted user ${userId}`)

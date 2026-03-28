@@ -82,11 +82,36 @@ router.post('/extract', authGuard, async (req, res) => {
 
     console.log(`[NPCI] Parsing ${rawResponses.length} intercepted responses for user: ${userId}`)
 
+    // ── PRE-SCAN: find the NPCI UPI profile response ──────────
+    // The NPCI API returns a standalone {"app":"PAYTM","vpa":"...","bank":"..."} response
+    // that is separate from the mandate list. We grab it first so we can stamp
+    // upiAppName onto every mandate that comes out of the main parsing pass.
+    let globalUpiAppName = null
+    for (const raw of rawResponses) {
+      try {
+        const obj = typeof raw === 'object' ? raw : JSON.parse(String(raw).trim())
+        if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+          const keys = Object.keys(obj).map(k => k.toLowerCase())
+          // Profile response has exactly: app + vpa + bank (no mandate fields)
+          if (keys.includes('app') && keys.includes('vpa') &&
+              !keys.includes('umn') && !keys.includes('mandates')) {
+            const appVal = obj.app || obj.App || obj.APP || ''
+            if (appVal) {
+              globalUpiAppName = String(appVal).toUpperCase()
+              console.log(`[NPCI] Found global UPI app name: ${globalUpiAppName}`)
+              break
+            }
+          }
+        }
+      } catch (_) { /* ignore parse errors in pre-scan */ }
+    }
+
     const allMandates = []
     lastExtractDebug  = {
       timestamp: new Date().toISOString(),
       responses: [],
-      totalRaw:  rawResponses.length
+      totalRaw:  rawResponses.length,
+      globalUpiAppName
     }
 
     // ── Parse each intercepted response ───────────────────────
@@ -99,13 +124,11 @@ router.post('/extract', authGuard, async (req, res) => {
       }
 
       try {
-        // Each element in rawResponses is a JSON string from the WebView
         let parsed
         const rawStr = String(raw).trim()
         try {
           parsed = JSON.parse(rawStr)
         } catch (e) {
-          // If it's already an object (shouldn't happen, but be safe)
           if (typeof raw === 'object' && raw !== null) {
             parsed = raw
           } else {
@@ -135,6 +158,16 @@ router.post('/extract', authGuard, async (req, res) => {
       }
 
       lastExtractDebug.responses.push(dbg)
+    }
+
+    // ── Inject global upiAppName into mandates that don't have one ──
+    if (globalUpiAppName) {
+      for (const m of allMandates) {
+        if (!m.upiAppName) {
+          m.upiAppName = globalUpiAppName
+        }
+      }
+      console.log(`[NPCI] Stamped upiAppName="${globalUpiAppName}" on mandates missing it`)
     }
 
     // ── Deduplicate: UMN > mandateRef > id ────────────────────
