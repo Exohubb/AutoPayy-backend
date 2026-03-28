@@ -429,17 +429,21 @@ router.post('/user/sync', authGuard, async (req, res) => {
 })
 
 // ─────────────────────────────────────────────────────────────────
-// DELETE /api/npci/user/delete
+// POST /api/npci/user/delete
 // Soft-deletes the user account and hard-deletes all their mandates.
 // Body: { userId }
+// Using POST (not DELETE) — DELETE with body is unreliable across clients.
 // ─────────────────────────────────────────────────────────────────
-router.delete('/user/delete', authGuard, async (req, res) => {
+router.post('/user/delete', authGuard, async (req, res) => {
   try {
     const { userId } = req.body
     if (!userId) {
+      console.error('[NPCI] /user/delete: missing userId. body=', req.body)
       return res.status(400).json({ success: false, error: 'userId is required' })
     }
+    console.log(`[NPCI] Deleting account for user: ${userId}`)
     await supabaseService.deleteAccount(userId)
+    console.log(`[NPCI] Account deleted successfully for user: ${userId}`)
     return res.json({ success: true, message: 'Account deleted' })
   } catch (err) {
     console.error('[NPCI] /user/delete error:', err.message)
