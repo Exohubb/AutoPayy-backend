@@ -216,28 +216,34 @@ async function upsertUser(userId, userData) {
 /**
  * Soft-delete a user account:
  * - Sets is_deleted=true, deleted_at=now() on the user row
+ *   (upserts the row first so is_deleted=true is written even if the user
+ *    row was never created — e.g. sign-in sync failed previously)
  * - Deletes ALL their mandates permanently
  * The user row itself is KEPT for audit trail.
  */
 async function deleteAccount(userId) {
-  // 1. Soft-delete the user row
-  const { error: userErr } = await supabase
+  // 1. Upsert-then-mark-deleted: use upsert so the row is guaranteed to exist,
+  //    then immediately set is_deleted=true + deleted_at.
+  //    Two-step avoids a race where upsert ignoreDuplicates=false could reset
+  //    is_deleted to false if someone calls upsertUser concurrently.
+  const { error: upsertErr } = await supabase
     .from('users')
-    .update({
-      is_deleted: true,
-      deleted_at: new Date().toISOString()
-    })
-    .eq('id', userId)
+    .upsert(
+      { id: userId, is_deleted: true, deleted_at: new Date().toISOString() },
+      { onConflict: 'id', ignoreDuplicates: false }
+    )
 
-  if (userErr) {
-    console.error('[Supabase] deleteAccount user update error:', userErr.message)
-    throw userErr
+  if (upsertErr) {
+    console.error('[Supabase] deleteAccount upsert error:', upsertErr.message)
+    throw upsertErr
   }
 
+  console.log(`[Supabase] deleteAccount: marked user ${userId} as deleted`)
+
   // 2. Hard-delete all mandates for this user
-  const { error: mandateErr } = await supabase
+  const { error: mandateErr, count: mandateCount } = await supabase
     .from('npci_mandates')
-    .delete()
+    .delete({ count: 'exact' })
     .eq('user_id', userId)
 
   if (mandateErr) {
@@ -245,7 +251,9 @@ async function deleteAccount(userId) {
     throw mandateErr
   }
 
-  // 3. Delete sessions too
+  console.log(`[Supabase] deleteAccount: deleted ${mandateCount ?? 'unknown'} mandates for user ${userId}`)
+
+  // 3. Delete sessions too (non-fatal)
   const { error: sessionErr } = await supabase
     .from('npci_sessions')
     .delete()
@@ -255,7 +263,7 @@ async function deleteAccount(userId) {
     console.warn('[Supabase] deleteAccount sessions delete error (non-fatal):', sessionErr.message)
   }
 
-  console.log(`[Supabase] Account deleted for user ${userId}`)
+  console.log(`[Supabase] Account deletion complete for user ${userId}`)
 }
 
 /**
