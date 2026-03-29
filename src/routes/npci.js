@@ -231,7 +231,7 @@ router.get('/mandates/:userId', authGuard, async (req, res) => {
 router.patch('/mandate/:userId/:mandateRef/status', authGuard, async (req, res) => {
   try {
     const { userId, mandateRef } = req.params
-    const { status } = req.body
+    const { status, nextPaymentDate } = req.body
     if (!status) {
       return res.status(400).json({ success: false, error: 'Missing status in body' })
     }
@@ -243,9 +243,13 @@ router.patch('/mandate/:userId/:mandateRef/status', authGuard, async (req, res) 
       })
     }
 
-    await supabaseService.updateMandateStatus(userId, mandateRef, status.toUpperCase())
-    console.log(`[NPCI] Mandate ${mandateRef} → ${status.toUpperCase()} for user ${userId}`)
-    return res.json({ success: true, mandateRef, status: status.toUpperCase() })
+    // nextPaymentDate is optional — only provided when pausing with a specific end date
+    await supabaseService.updateMandateStatus(
+      userId, mandateRef, status.toUpperCase(),
+      nextPaymentDate || null
+    )
+    console.log(`[NPCI] Mandate ${mandateRef} → ${status.toUpperCase()} nextPaymentDate=${nextPaymentDate || 'null'} for user ${userId}`)
+    return res.json({ success: true, mandateRef, status: status.toUpperCase(), nextPaymentDate: nextPaymentDate || null })
 
   } catch (err) {
     console.error('[NPCI] /status update error:', err.message)

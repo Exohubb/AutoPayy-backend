@@ -91,11 +91,29 @@ async function getMandates(userId) {
   }))
 }
 
-/** Update status of a single mandate. */
-async function updateMandateStatus(userId, mandateRef, status) {
+/**
+ * Update status of a single mandate.
+ * @param {string} userId
+ * @param {string} mandateRef  NPCI mandate reference / UMN
+ * @param {string} status      'ACTIVE' | 'PAUSED' | 'REVOKED'
+ * @param {string|null} nextPaymentDate  ddMMyyyy pause-end date (optional, only for PAUSE)
+ */
+async function updateMandateStatus(userId, mandateRef, status, nextPaymentDate = null) {
+  const updatePayload = {
+    status,
+    updated_at: new Date().toISOString()
+  }
+  // Write next_payment_date only when explicitly provided (pause end date)
+  if (nextPaymentDate) {
+    updatePayload.next_payment_date = nextPaymentDate
+  } else if (status === 'REVOKED' || status === 'ACTIVE') {
+    // Clear the pause date when cancelling or resuming
+    updatePayload.next_payment_date = null
+  }
+
   const { error } = await supabase
     .from('npci_mandates')
-    .update({ status, updated_at: new Date().toISOString() })
+    .update(updatePayload)
     .eq('user_id', userId)
     .eq('mandate_ref', mandateRef)
 
