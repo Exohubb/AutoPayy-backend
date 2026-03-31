@@ -87,7 +87,10 @@ async function getMandates(userId) {
     mandateRef:         row.mandate_ref,
     umn:                row.umn,
     paymentType:        row.payment_type,
-    source:             'NPCI'
+    source:             'NPCI',
+    nextDebitDate:      row.next_payment_date || '',
+    next_payment_date:  row.next_payment_date || '',
+    pauseEndDate:       row.pause_end_date || ''
   }))
 }
 
