@@ -257,6 +257,38 @@ router.patch('/mandate/:userId/:mandateRef/status', authGuard, async (req, res) 
   }
 })
 
+// PATCH /api/npci/mandate/:userId/:mandateRef/frequency
+// ─────────────────────────────────────────────────────────────────
+router.patch('/mandate/:userId/:mandateRef/frequency', authGuard, async (req, res) => {
+  try {
+    const { userId, mandateRef } = req.params
+    const { frequency } = req.body
+    if (!frequency) {
+      return res.status(400).json({ success: false, error: 'Missing frequency in body' })
+    }
+    const validFrequencies = ['Monthly', 'Yearly']
+    const isValidCustomMonths = /^\d+ Months$/.test(frequency) && 
+      parseInt(frequency) >= 2 && parseInt(frequency) <= 25
+    
+    if (!validFrequencies.includes(frequency) && !isValidCustomMonths) {
+      return res.status(400).json({
+        success: false,
+        error:   `frequency must be 'Monthly', 'Yearly', or '(2-25) Months'`
+      })
+    }
+
+    await supabaseService.updateMandateFrequency(
+      userId, mandateRef, frequency
+    )
+    console.log(`[NPCI] Mandate ${mandateRef} → frequency=${frequency} for user ${userId}`)
+    return res.json({ success: true, mandateRef, frequency })
+
+  } catch (err) {
+    console.error('[NPCI] /frequency update error:', err.message)
+    return res.status(500).json({ success: false, error: 'Internal server error' })
+  }
+})
+
 // ─────────────────────────────────────────────────────────────────
 // GET /api/npci/test
 // ── Bug fix: each object now has its opening { brace ────────────

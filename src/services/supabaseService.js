@@ -123,6 +123,30 @@ async function updateMandateStatus(userId, mandateRef, status, nextPaymentDate =
   }
 }
 
+/**
+ * Update the frequency of a mandate.
+ * @param {string} userId
+ * @param {string} mandateRef  NPCI mandate reference
+ * @param {string} frequency   'Monthly' | 'Yearly' | 'X Months'
+ */
+async function updateMandateFrequency(userId, mandateRef, frequency) {
+  const updatePayload = {
+    frequency,
+    updated_at: new Date().toISOString()
+  }
+
+  const { error } = await supabase
+    .from('npci_mandates')
+    .update(updatePayload)
+    .eq('user_id', userId)
+    .eq('mandate_ref', mandateRef)
+
+  if (error) {
+    console.error('[Supabase] updateMandateFrequency error:', error.message)
+    throw error
+  }
+}
+
 /** Get mandates filtered by status. */
 async function getMandatesByStatus(userId, status) {
   const { data, error } = await supabase
@@ -365,6 +389,7 @@ module.exports = {
   saveMandates,
   getMandates,
   updateMandateStatus,
+  updateMandateFrequency,
   getMandatesByStatus,
   logSession,
   enrichMandates,
