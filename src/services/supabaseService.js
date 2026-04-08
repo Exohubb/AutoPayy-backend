@@ -388,6 +388,52 @@ async function enrichMandates(userId, parsedTables, parseDate) {
   return updated
 }
 
+/**
+ * Upgrade a user to Pro status after successful payment verification.
+ * Sets is_pro=true in the users table along with payment metadata.
+ * @param {string} userId
+ * @param {string} paymentId   Razorpay payment_id (pay_xxx)
+ * @param {string} orderId     Razorpay order_id (order_xxx)
+ */
+async function upgradeUserToPro(userId, paymentId, orderId) {
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('users')
+    .upsert({
+      id:         userId,
+      is_pro:     true,
+      last_seen:  now,
+      is_deleted: false
+    }, { onConflict: 'id', ignoreDuplicates: false })
+
+  if (error) {
+    console.error('[Supabase] upgradeUserToPro error:', error.message)
+    throw error
+  }
+
+  console.log(`[Supabase] User ${userId} upgraded to Pro. paymentId=${paymentId}, orderId=${orderId}`)
+}
+
+/**
+ * Get whether a user is currently Pro.
+ * @param {string} userId
+ * @returns {boolean}
+ */
+async function getUserProStatus(userId) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('is_pro')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) {
+    console.error('[Supabase] getUserProStatus error:', error.message)
+    throw error
+  }
+
+  return (data && data.is_pro) ? true : false
+}
+
 module.exports = {
   saveMandates,
   getMandates,
@@ -398,5 +444,7 @@ module.exports = {
   enrichMandates,
   incrementFetchCount,
   upsertUser,
-  deleteAccount
+  deleteAccount,
+  upgradeUserToPro,
+  getUserProStatus
 }
