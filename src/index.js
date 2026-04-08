@@ -57,6 +57,9 @@ app.get('/health', (_req, res) => res.json({
 // NPCI routes
 app.use('/api/npci', require('./routes/npci'))
 
+// Payment routes (Razorpay)
+app.use('/api/payments', require('./routes/payments'))
+
 // Global error handler
 app.use((err, req, res, next) => {
   console.error(`[GLOBAL-ERROR] ${req.method} ${req.url}: ${err.message}`)
