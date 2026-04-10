@@ -7,8 +7,8 @@ const supabaseService = require('../services/supabaseService')
 
 // ── Razorpay Plan IDs ─────────────────────────────────────────────
 const PLAN_IDS = {
-  monthly: 'plan_SbncP7DZheLOy5',   // ₹99/month
-  yearly:  'plan_Sbneh0AhyMafzx'    // ₹699/year
+  monthly: 'plan_Sbp5S9SuxkNHgE',   // ₹99/month
+  yearly:  'plan_Sbp5iP3zFZglgX'    // ₹699/year
 }
 
 // ── Auth guard ────────────────────────────────────────────────────
