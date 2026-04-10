@@ -27,7 +27,7 @@ console.error = (...args) => {
   origError.apply(console, args)
 }
 
-app.use(cors())
+app.use(cors({ origin: false }))
 
 // Log ALL incoming requests
 app.use((req, res, next) => {

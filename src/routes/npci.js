@@ -34,13 +34,39 @@ function authGuard(req, res, next) {
   next()
 }
 
+// ── IDOR guard: verify JWT userId matches URL/body userId ─────────
+// When the Android app sends an Authorization: Bearer <supabase_jwt> header,
+// we verify the JWT and reject requests where the claimed userId doesn't match.
+// Falls through (no-op) when no JWT is provided for backward compatibility.
+async function verifyUserOwnership(req, res, next) {
+  const authHeader = req.headers['authorization']
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return next()
+  try {
+    const token = authHeader.slice(7)
+    const { data: { user }, error } = await supabaseService.getSupabaseAdmin().auth.getUser(token)
+    if (error || !user) {
+      return res.status(401).json({ success: false, error: 'Invalid JWT token' })
+    }
+    const paramUserId = req.params.userId || req.body?.userId
+    if (paramUserId && paramUserId !== user.id) {
+      console.log(`[NPCI] IDOR blocked: JWT uid=${user.id} param uid=${paramUserId}`)
+      return res.status(403).json({ success: false, error: 'Forbidden: userId mismatch' })
+    }
+    req.jwtUserId = user.id
+    next()
+  } catch (err) {
+    console.error('[NPCI] JWT verification error:', err.message)
+    return res.status(401).json({ success: false, error: 'JWT verification failed' })
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // POST /api/npci/extract
 // Primary flow: Android WebView intercepts NPCI responses → sends here.
 // express.json() is INTENTIONALLY skipped — body is read manually
 // to handle large payloads and avoid buffering issues.
 // ─────────────────────────────────────────────────────────────────
-router.post('/extract', authGuard, async (req, res) => {
+router.post('/extract', authGuard, verifyUserOwnership, async (req, res) => {
   try {
     // Manual body read (express.json skipped for this route in index.js)
     const bodyText = await new Promise((resolve, reject) => {
@@ -215,7 +241,7 @@ router.post('/extract', authGuard, async (req, res) => {
 // GET /api/npci/mandates/:userId
 // Android loads saved mandates without re-fetching NPCI
 // ─────────────────────────────────────────────────────────────────
-router.get('/mandates/:userId', authGuard, async (req, res) => {
+router.get('/mandates/:userId', authGuard, verifyUserOwnership, async (req, res) => {
   try {
     const mandates = await supabaseService.getMandates(req.params.userId)
     return res.json({ success: true, mandates, totalFound: mandates.length })
@@ -228,7 +254,7 @@ router.get('/mandates/:userId', authGuard, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────
 // PATCH /api/npci/mandate/:userId/:mandateRef/status
 // ─────────────────────────────────────────────────────────────────
-router.patch('/mandate/:userId/:mandateRef/status', authGuard, async (req, res) => {
+router.patch('/mandate/:userId/:mandateRef/status', authGuard, verifyUserOwnership, async (req, res) => {
   try {
     const { userId, mandateRef } = req.params
     const { status, nextPaymentDate } = req.body
@@ -259,7 +285,7 @@ router.patch('/mandate/:userId/:mandateRef/status', authGuard, async (req, res) 
 
 // PATCH /api/npci/mandate/:userId/:mandateRef/frequency
 // ─────────────────────────────────────────────────────────────────
-router.patch('/mandate/:userId/:mandateRef/frequency', authGuard, async (req, res) => {
+router.patch('/mandate/:userId/:mandateRef/frequency', authGuard, verifyUserOwnership, async (req, res) => {
   try {
     const { userId, mandateRef } = req.params
     const { frequency } = req.body
@@ -397,10 +423,10 @@ router.get('/test', (req, res) => {
 })
 
 // ── GET /api/npci/debug ───────────────────────────────────────────
-router.get('/debug', (_req, res) => res.json(lastExtractDebug))
+router.get('/debug', authGuard, (_req, res) => res.json(lastExtractDebug))
 
 // ── GET /api/npci/logs ────────────────────────────────────────────
-router.get('/logs', (_req, res) => {
+router.get('/logs', authGuard, (_req, res) => {
   const logs = global.logBuffer || []
   res.type('text/plain').send(
     logs.length > 0

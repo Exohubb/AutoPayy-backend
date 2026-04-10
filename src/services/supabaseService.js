@@ -487,5 +487,6 @@ module.exports = {
   deleteAccount,
   upgradeUserToPro,
   cancelUserPro,
-  getUserProStatus
+  getUserProStatus,
+  getSupabaseAdmin: () => supabase   // used by IDOR guard for JWT verification
 }
