@@ -52,7 +52,7 @@ app.use((req, res, next) => {
 // Health check
 app.get('/health', (_req, res) => res.json({
   status:    'ok',
-  version:   'v10-dynamic-plans',
+  version:   'v11-force-upgrade',
   timestamp: new Date().toISOString()
 }))
 
@@ -437,6 +437,44 @@ app.post('/api/payments/cancel-subscription', paymentsAuthGuard, async (req, res
 // These are not defined inline above — delegate to the payments router
 app.use('/api/payments', require('./routes/payments'))
 
+// ══════════════════════════════════════════════════════════════════
+// POST /api/payments/force-upgrade
+// Directly upgrades a user to Pro in Supabase after confirmed payment.
+// Called as a guaranteed sync step — no signature verification needed
+// because the app has already received a successful payment result
+// from Razorpay and the endpoint is gated by APP_SECRET.
+// Body: { userId, paymentId, subscriptionId?, planType }
+// ══════════════════════════════════════════════════════════════════
+app.post('/api/payments/force-upgrade', paymentsAuthGuard, async (req, res) => {
+  try {
+    const { userId, paymentId, subscriptionId = null, planType = 'monthly' } = req.body || {}
+
+    if (!userId || !paymentId) {
+      return res.status(400).json({ success: false, error: 'userId and paymentId are required' })
+    }
+
+    console.log(`[PAYMENTS] force-upgrade: userId=${userId} paymentId=${paymentId} subId=${subscriptionId} plan=${planType}`)
+
+    const supabaseService = require('./services/supabaseService')
+    await supabaseService.upgradeUserToPro(userId, paymentId, subscriptionId, planType)
+
+    console.log(`[PAYMENTS] force-upgrade: User ${userId} upgraded to Pro (${planType})`)
+
+    res.json({
+      success:        true,
+      message:        'User upgraded to Pro',
+      userId,
+      paymentId,
+      subscriptionId,
+      planType
+    })
+
+  } catch (error) {
+    console.error(`[PAYMENTS] force-upgrade error: ${error.message}`)
+    res.status(500).json({ success: false, error: error.message || 'Force upgrade failed' })
+  }
+})
+
 // Global error handler
 app.use((err, req, res, next) => {
   console.error(`[GLOBAL-ERROR] ${req.method} ${req.url}: ${err.message}`)
@@ -445,7 +483,7 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
-  console.log(`AutoPayy backend v10-dynamic-plans running on port ${PORT}`)
+  console.log(`AutoPayy backend v11-force-upgrade running on port ${PORT}`)
   console.log(`[STARTUP] APP_SECRET: ${process.env.APP_SECRET ? 'SET' : 'MISSING!'}`)
   console.log(`[STARTUP] RAZORPAY_KEY_ID: ${process.env.RAZORPAY_KEY_ID ? 'SET' : 'MISSING!'}`)
   console.log(`[STARTUP] RAZORPAY_KEY_SECRET: ${process.env.RAZORPAY_KEY_SECRET ? 'SET' : 'MISSING!'}`)
