@@ -52,7 +52,7 @@ app.use((req, res, next) => {
 // Health check
 app.get('/health', (_req, res) => res.json({
   status:    'ok',
-  version:   'v9-subscriptions-inline',
+  version:   'v10-dynamic-plans',
   timestamp: new Date().toISOString()
 }))
 
@@ -186,11 +186,9 @@ app.get('/api/payments/pro-status/:userId', paymentsAuthGuard, async (req, res) 
   }
 })
 
-// ── Razorpay Subscription Plan IDs ──────────────────────────────────────────
-const PLAN_IDS = {
-  monthly: 'plan_Sbp5S9SuxkNHgE',   // ₹99/month
-  yearly:  'plan_Sbp5iP3zFZglgX'    // ₹699/year
-}
+// ── Razorpay plan cache (populated on first use) ─────────────────────────────
+// Override via Railway env vars: RAZORPAY_PLAN_MONTHLY, RAZORPAY_PLAN_YEARLY
+const planCache = { monthly: null, yearly: null }
 
 // Helper: build Razorpay axios client
 function rzpClient() {
@@ -205,6 +203,42 @@ function rzpClient() {
     headers: { 'Content-Type': 'application/json' },
     timeout: 15000
   })
+}
+
+// Helper: get or create a Razorpay plan for the given planType
+async function getOrCreatePlan(client, planType) {
+  // 1. Already cached this run
+  if (planCache[planType]) return planCache[planType]
+
+  // 2. Set via env var (operator override)
+  const envVar = planType === 'monthly' ? process.env.RAZORPAY_PLAN_MONTHLY : process.env.RAZORPAY_PLAN_YEARLY
+  if (envVar && envVar.startsWith('plan_')) {
+    planCache[planType] = envVar
+    console.log(`[PAYMENTS] Using env-var plan for ${planType}: ${envVar}`)
+    return planCache[planType]
+  }
+
+  // 3. Create a fresh plan under the current credentials
+  const amount   = planType === 'monthly' ? 9900 : 69900   // paise (₹99 / ₹699)
+  const period   = planType === 'monthly' ? 'monthly' : 'yearly'
+  const interval = 1
+
+  console.log(`[PAYMENTS] Creating Razorpay plan for ${planType}: ₹${amount / 100}`)
+  const resp = await client.post('/plans', {
+    period,
+    interval,
+    item: {
+      name:        'AutoPayy Pro',
+      amount,
+      currency:    'INR',
+      description: `AutoPayy Pro ${planType} plan`
+    },
+    notes: { appName: 'AutoPayy', planType }
+  })
+
+  planCache[planType] = resp.data.id
+  console.log(`[PAYMENTS] Plan created: ${planCache[planType]} (${planType})`)
+  return planCache[planType]
 }
 
 // POST /api/payments/create-subscription
@@ -223,14 +257,16 @@ app.post('/api/payments/create-subscription', paymentsAuthGuard, async (req, res
       return res.status(400).json({ success: false, error: 'userId is required' })
     }
 
-    const planId = PLAN_IDS[planType]
-    if (!planId) {
+    if (!['monthly', 'yearly'].includes(planType)) {
       return res.status(400).json({ success: false, error: `Unknown planType: ${planType}. Use 'monthly' or 'yearly'` })
     }
 
-    console.log(`[PAYMENTS] create-subscription: planType=${planType} planId=${planId} userId=${userId}`)
+    console.log(`[PAYMENTS] create-subscription: planType=${planType} userId=${userId}`)
 
     const client = rzpClient()
+    const planId = await getOrCreatePlan(client, planType)
+
+    console.log(`[PAYMENTS] Using planId=${planId} for ${planType}`)
 
     // Trial ends 7 days from now; billing starts after that
     const trialEndAt = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60)
@@ -409,7 +445,7 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
-  console.log(`AutoPayy backend v9-subscriptions-inline running on port ${PORT}`)
+  console.log(`AutoPayy backend v10-dynamic-plans running on port ${PORT}`)
   console.log(`[STARTUP] APP_SECRET: ${process.env.APP_SECRET ? 'SET' : 'MISSING!'}`)
   console.log(`[STARTUP] RAZORPAY_KEY_ID: ${process.env.RAZORPAY_KEY_ID ? 'SET' : 'MISSING!'}`)
   console.log(`[STARTUP] RAZORPAY_KEY_SECRET: ${process.env.RAZORPAY_KEY_SECRET ? 'SET' : 'MISSING!'}`)
