@@ -389,40 +389,74 @@ async function enrichMandates(userId, parsedTables, parseDate) {
 }
 
 /**
- * Upgrade a user to Pro status after successful payment verification.
- * Sets is_pro=true in the users table along with payment metadata.
+ * Upgrade a user to Pro status after successful subscription authentication.
+ * Sets is_pro=true, pro_date, subscription_id, plan_type in the users table.
  * @param {string} userId
- * @param {string} paymentId   Razorpay payment_id (pay_xxx)
- * @param {string} orderId     Razorpay order_id (order_xxx)
+ * @param {string} paymentId      Razorpay payment_id (pay_xxx)
+ * @param {string} subscriptionId Razorpay subscription_id (sub_xxx)
+ * @param {string} planType       'monthly' | 'yearly'
  */
-async function upgradeUserToPro(userId, paymentId, orderId) {
+async function upgradeUserToPro(userId, paymentId, subscriptionId, planType = 'monthly') {
   const now = new Date().toISOString()
+  const payload = {
+    id:              userId,
+    is_pro:          true,
+    pro_date:        now,
+    pro_canceled:    null,     // clear any prior cancellation
+    last_seen:       now,
+    is_deleted:      false
+  }
+
+  // Write subscription_id and plan_type only when provided
+  if (subscriptionId) payload.subscription_id = subscriptionId
+  if (planType)       payload.plan_type        = planType
+
   const { error } = await supabase
     .from('users')
-    .upsert({
-      id:         userId,
-      is_pro:     true,
-      last_seen:  now,
-      is_deleted: false
-    }, { onConflict: 'id', ignoreDuplicates: false })
+    .upsert(payload, { onConflict: 'id', ignoreDuplicates: false })
 
   if (error) {
     console.error('[Supabase] upgradeUserToPro error:', error.message)
     throw error
   }
 
-  console.log(`[Supabase] User ${userId} upgraded to Pro. paymentId=${paymentId}, orderId=${orderId}`)
+  console.log(`[Supabase] User ${userId} upgraded to Pro. paymentId=${paymentId} subscriptionId=${subscriptionId} plan=${planType}`)
 }
 
 /**
- * Get whether a user is currently Pro.
+ * Cancel a user's Pro subscription.
+ * Sets is_pro=false, pro_canceled=now, clears subscription_id.
  * @param {string} userId
- * @returns {boolean}
+ */
+async function cancelUserPro(userId) {
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('users')
+    .update({
+      is_pro:          false,
+      pro_canceled:    now,
+      subscription_id: null,
+      last_seen:       now
+    })
+    .eq('id', userId)
+
+  if (error) {
+    console.error('[Supabase] cancelUserPro error:', error.message)
+    throw error
+  }
+
+  console.log(`[Supabase] User ${userId} Pro subscription cancelled at ${now}`)
+}
+
+/**
+ * Get whether a user is currently Pro, including subscription metadata.
+ * @param {string} userId
+ * @returns {{ isPro: boolean, subscriptionId: string|null, planType: string|null, proDate: string|null }}
  */
 async function getUserProStatus(userId) {
   const { data, error } = await supabase
     .from('users')
-    .select('is_pro')
+    .select('is_pro, subscription_id, plan_type, pro_date, pro_canceled')
     .eq('id', userId)
     .maybeSingle()
 
@@ -431,7 +465,13 @@ async function getUserProStatus(userId) {
     throw error
   }
 
-  return (data && data.is_pro) ? true : false
+  return {
+    isPro:          (data && data.is_pro)          ? true  : false,
+    subscriptionId: (data && data.subscription_id) || null,
+    planType:       (data && data.plan_type)        || null,
+    proDate:        (data && data.pro_date)         || null,
+    proCanceled:    (data && data.pro_canceled)     || null
+  }
 }
 
 module.exports = {
@@ -446,5 +486,6 @@ module.exports = {
   upsertUser,
   deleteAccount,
   upgradeUserToPro,
+  cancelUserPro,
   getUserProStatus
 }
