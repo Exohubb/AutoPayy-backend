@@ -52,7 +52,7 @@ app.use((req, res, next) => {
 // Health check
 app.get('/health', (_req, res) => res.json({
   status:    'ok',
-  version:   'v8-payments-inline',
+  version:   'v9-subscriptions-inline',
   timestamp: new Date().toISOString()
 }))
 
@@ -169,14 +169,237 @@ app.get('/api/payments/pro-status/:userId', paymentsAuthGuard, async (req, res) 
     if (!userId) return res.status(400).json({ success: false, error: 'userId is required' })
 
     const supabaseService = require('./services/supabaseService')
-    const isPro = await supabaseService.getUserProStatus(userId)
-    console.log(`[PAYMENTS] pro-status: ${userId} isPro=${isPro}`)
-    res.json({ success: true, userId, isPro })
+    const status = await supabaseService.getUserProStatus(userId)
+    console.log(`[PAYMENTS] pro-status: ${userId} isPro=${status.isPro} plan=${status.planType}`)
+    res.json({
+      success:        true,
+      userId,
+      isPro:          status.isPro,
+      subscriptionId: status.subscriptionId,
+      planType:       status.planType,
+      proDate:        status.proDate,
+      proCanceled:    status.proCanceled
+    })
   } catch (error) {
     console.error(`[PAYMENTS] pro-status error: ${error.message}`)
     res.status(500).json({ success: false, error: error.message })
   }
 })
+
+// ── Razorpay Subscription Plan IDs ──────────────────────────────────────────
+const PLAN_IDS = {
+  monthly: 'plan_Sbp5S9SuxkNHgE',   // ₹99/month
+  yearly:  'plan_Sbp5iP3zFZglgX'    // ₹699/year
+}
+
+// Helper: build Razorpay axios client
+function rzpClient() {
+  const keyId     = process.env.RAZORPAY_KEY_ID
+  const keySecret = process.env.RAZORPAY_KEY_SECRET
+  if (!keyId || !keySecret) {
+    throw new Error('Razorpay credentials not configured (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET)')
+  }
+  return axios.create({
+    baseURL: 'https://api.razorpay.com/v1',
+    auth:    { username: keyId, password: keySecret },
+    headers: { 'Content-Type': 'application/json' },
+    timeout: 15000
+  })
+}
+
+// POST /api/payments/create-subscription
+app.post('/api/payments/create-subscription', paymentsAuthGuard, async (req, res) => {
+  try {
+    const {
+      planType = 'monthly',
+      userId,
+      userEmail = '',
+      userPhone = '',
+      userName  = ''
+    } = req.body || {}
+
+    if (!userId) {
+      console.log('[PAYMENTS] create-subscription: missing userId')
+      return res.status(400).json({ success: false, error: 'userId is required' })
+    }
+
+    const planId = PLAN_IDS[planType]
+    if (!planId) {
+      return res.status(400).json({ success: false, error: `Unknown planType: ${planType}. Use 'monthly' or 'yearly'` })
+    }
+
+    console.log(`[PAYMENTS] create-subscription: planType=${planType} planId=${planId} userId=${userId}`)
+
+    const client = rzpClient()
+
+    // Trial ends 7 days from now; billing starts after that
+    const trialEndAt = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60)
+
+    const subscriptionPayload = {
+      plan_id:         planId,
+      total_count:     planType === 'yearly' ? 5 : 60,
+      quantity:        1,
+      customer_notify: 1,
+      start_at:        trialEndAt,
+      addons: [
+        {
+          item: {
+            name:     'AutoPayy Pro Trial Auth',
+            amount:   100,
+            currency: 'INR'
+          }
+        }
+      ],
+      notes: {
+        userId,
+        userName,
+        planType,
+        appName:   'AutoPayy',
+        createdAt: new Date().toISOString()
+      }
+    }
+
+    // Add notify_info only if values provided
+    const notifyInfo = {}
+    if (userPhone) notifyInfo.notify_phone = userPhone
+    if (userEmail) notifyInfo.notify_email = userEmail
+    if (Object.keys(notifyInfo).length) subscriptionPayload.notify_info = notifyInfo
+
+    const response = await client.post('/subscriptions', subscriptionPayload)
+    const sub = response.data
+
+    console.log(`[PAYMENTS] Subscription created: ${sub.id} status=${sub.status} planType=${planType}`)
+
+    res.json({
+      success:         true,
+      subscription_id: sub.id,
+      plan_type:       planType,
+      plan_id:         planId,
+      status:          sub.status,
+      razorpay_key:    process.env.RAZORPAY_KEY_ID
+    })
+
+  } catch (error) {
+    console.error(`[PAYMENTS] create-subscription error: ${error.message}`)
+    if (error.response?.data) console.error('[PAYMENTS] Razorpay:', JSON.stringify(error.response.data))
+    res.status(500).json({
+      success: false,
+      error: error.response?.data?.error?.description || error.message || 'Failed to create subscription'
+    })
+  }
+})
+
+// POST /api/payments/verify-subscription
+app.post('/api/payments/verify-subscription', paymentsAuthGuard, async (req, res) => {
+  try {
+    const {
+      razorpay_payment_id,
+      razorpay_subscription_id,
+      razorpay_signature,
+      userId,
+      planType = 'monthly'
+    } = req.body || {}
+
+    if (!razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature || !userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing fields: razorpay_payment_id, razorpay_subscription_id, razorpay_signature, userId'
+      })
+    }
+
+    const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET
+    if (!razorpayKeySecret) {
+      return res.status(500).json({ success: false, error: 'RAZORPAY_KEY_SECRET not configured' })
+    }
+
+    // Razorpay subscription signature: HMAC-SHA256 of "payment_id|subscription_id"
+    const expectedSig = crypto
+      .createHmac('sha256', razorpayKeySecret)
+      .update(razorpay_payment_id + '|' + razorpay_subscription_id)
+      .digest('hex')
+
+    if (expectedSig !== razorpay_signature) {
+      console.error(`[PAYMENTS] verify-subscription: SIGNATURE MISMATCH userId=${userId}`)
+      return res.status(400).json({ success: false, error: 'Subscription payment verification failed: invalid signature' })
+    }
+
+    console.log(`[PAYMENTS] verify-subscription: Signature OK paymentId=${razorpay_payment_id} subId=${razorpay_subscription_id}`)
+
+    const supabaseService = require('./services/supabaseService')
+    await supabaseService.upgradeUserToPro(userId, razorpay_payment_id, razorpay_subscription_id, planType)
+
+    console.log(`[PAYMENTS] verify-subscription: User ${userId} upgraded to Pro (${planType})`)
+
+    res.json({
+      success:        true,
+      message:        'Subscription verified — AutoPayy Pro activated',
+      paymentId:      razorpay_payment_id,
+      subscriptionId: razorpay_subscription_id,
+      planType
+    })
+
+  } catch (error) {
+    console.error(`[PAYMENTS] verify-subscription error: ${error.message}`)
+    res.status(500).json({ success: false, error: error.message || 'Subscription verification failed' })
+  }
+})
+
+// POST /api/payments/cancel-subscription
+app.post('/api/payments/cancel-subscription', paymentsAuthGuard, async (req, res) => {
+  try {
+    const { subscriptionId, userId, immediately = false } = req.body || {}
+
+    if (!subscriptionId || !userId) {
+      return res.status(400).json({ success: false, error: 'subscriptionId and userId are required' })
+    }
+
+    console.log(`[PAYMENTS] cancel-subscription: subId=${subscriptionId} userId=${userId} immediately=${immediately}`)
+
+    const client = rzpClient()
+    const rzpResponse = await client.post(
+      `/subscriptions/${subscriptionId}/cancel`,
+      { cancel_at_cycle_end: immediately ? 0 : 1 }
+    )
+
+    const sub = rzpResponse.data
+    console.log(`[PAYMENTS] Razorpay subscription cancelled: ${sub.id} status=${sub.status}`)
+
+    const supabaseService = require('./services/supabaseService')
+    await supabaseService.cancelUserPro(userId)
+
+    res.json({
+      success:        true,
+      message:        immediately
+        ? 'Subscription cancelled immediately'
+        : 'Subscription will be cancelled at end of billing period',
+      subscriptionId: sub.id,
+      status:         sub.status
+    })
+
+  } catch (error) {
+    console.error(`[PAYMENTS] cancel-subscription error: ${error.message}`)
+    if (error.response?.data) console.error('[PAYMENTS] Razorpay:', JSON.stringify(error.response.data))
+
+    if (error.response?.status === 404) {
+      try {
+        const supabaseService = require('./services/supabaseService')
+        await supabaseService.cancelUserPro(req.body.userId)
+        return res.json({ success: true, message: 'Subscription not found on Razorpay — marked cancelled locally' })
+      } catch (supaErr) {
+        console.error('[PAYMENTS] Supabase fallback cancel failed:', supaErr.message)
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      error: error.response?.data?.error?.description || error.message || 'Failed to cancel subscription'
+    })
+  }
+})
+
+// Subscription routes (create-subscription, verify-subscription, cancel-subscription)
+// These are not defined inline above — delegate to the payments router
+app.use('/api/payments', require('./routes/payments'))
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -186,7 +409,7 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {
-  console.log(`AutoPayy backend v8-payments-inline running on port ${PORT}`)
+  console.log(`AutoPayy backend v9-subscriptions-inline running on port ${PORT}`)
   console.log(`[STARTUP] APP_SECRET: ${process.env.APP_SECRET ? 'SET' : 'MISSING!'}`)
   console.log(`[STARTUP] RAZORPAY_KEY_ID: ${process.env.RAZORPAY_KEY_ID ? 'SET' : 'MISSING!'}`)
   console.log(`[STARTUP] RAZORPAY_KEY_SECRET: ${process.env.RAZORPAY_KEY_SECRET ? 'SET' : 'MISSING!'}`)
